@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}运行对比 · 小域遮审台{% endblock %}
+{% block content %}
+<section class="section-head">
+  <div>
+    <p class="eyebrow">RUN COMPARISON</p>
+    <h1>运行对比</h1>
+    <p class="lede">比较两次本地台账运行的抑制比例、主/补抑制数量、阻断状态与公开输出哈希。</p>
+  </div>
+</section>
+
+<form class="diff-form" method="get" action="{{ url_for('diff_page') }}">
+  <label for="run_a">运行 A</label>
+  <select id="run_a" name="run_a">
+    <option value="">选择运行</option>
+    {% for run in runs %}
+    <option value="{{ run.id }}" {% if run.id == run_a %}selected{% endif %}>{{ run.id }} · {{ run.status }}</option>
+    {% endfor %}
+  </select>
+  <label for="run_b">运行 B</label>
+  <select id="run_b" name="run_b">
+    <option value="">选择运行</option>
+    {% for run in runs %}
+    <option value="{{ run.id }}" {% if run.id == run_b %}selected{% endif %}>{{ run.id }} · {{ run.status }}</option>
+    {% endfor %}
+  </select>
+  <button class="button" type="submit" {% if runs|length < 2 %}disabled{% endif %}>对比</button>
+</form>
+{% if runs|length < 2 %}<p class="notice">至少需要两次运行才能对比。先运行演示 fixture 两次即可。</p>{% endif %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+{% if comparison %}
+<section class="compare-head">
+  <article>
+    <span class="eyebrow">RUN A</span>
+    <h2><a href="{{ url_for('run_detail', run_id=comparison.run_a.id) }}"><code>{{ comparison.run_a.id }}</code></a></h2>
+    <span class="status status-{{ comparison.run_a.status }}">{{ comparison.run_a.status }}</span>
+  </article>
+  <div class="compare-arrow" aria-hidden="true">→</div>
+  <article>
+    <span class="eyebrow">RUN B</span>
+    <h2><a href="{{ url_for('run_detail', run_id=comparison.run_b.id) }}"><code>{{ comparison.run_b.id }}</code></a></h2>
+    <span class="status status-{{ comparison.run_b.status }}">{{ comparison.run_b.status }}</span>
+  </article>
+</section>
+
+<section class="metric-grid">
+  <article class="metric"><span>抑制比例变化</span><strong class="{{ 'bad' if comparison.summary.suppression_ratio_delta > 0 else 'good' }}">{{ "%+.2f%%"|format(comparison.summary.suppression_ratio_delta * 100) }}</strong></article>
+  <article class="metric"><span>主抑制变化</span><strong>{{ "%+d"|format(comparison.summary.primary_delta) }}</strong></article>
+  <article class="metric"><span>互补抑制变化</span><strong>{{ "%+d"|format(comparison.summary.secondary_delta) }}</strong></article>
+  <article class="metric"><span>阻断状态变化</span><strong>{{ "是" if comparison.summary.blocked_changed else "否" }}</strong></article>
+  <article class="metric"><span>公开输出哈希变化</span><strong>{{ "是" if comparison.summary.public_hash_changed else "否" }}</strong></article>
+</section>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>表</th>
+        <th>A 状态</th><th>B 状态</th>
+        <th class="num">比例变化</th>
+        <th class="num">主抑制</th><th class="num">互补抑制</th>
+        <th>公开哈希</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for table in comparison.tables %}
+      <tr class="{{ 'changed' if table.changed else '' }}">
+        <td><code>{{ table.table_id }}</code>{% if table.only_in_a %} <span class="tag">仅 A</span>{% endif %}{% if table.only_in_b %} <span class="tag">仅 B</span>{% endif %}</td>
+        <td><span class="status status-{{ table.status_a }}">{{ table.status_a }}</span></td>
+        <td><span class="status status-{{ table.status_b }}">{{ table.status_b }}</span></td>
+        <td class="num">{{ "%+.2f%%"|format(table.ratio_delta * 100) }}</td>
+        <td class="num">{{ table.primary_a }} → {{ table.primary_b }}</td>
+        <td class="num">{{ table.secondary_a }} → {{ table.secondary_b }}</td>
+        <td>
+          {% if table.public_hash_changed %}
+            <span class="hash-change">changed</span>
+            <code class="muted">{{ (table.public_sha256_b or "missing")[:12] }}…</code>
+          {% else %}
+            <span class="muted">unchanged</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% elif not error %}
+<div class="empty"><h3>选择两次运行</h3><p>对比会读取本地台账，不访问任何远程服务。</p></div>
+{% endif %}
+{% endblock %}

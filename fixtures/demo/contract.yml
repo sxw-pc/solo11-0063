@@ -1,0 +1,32 @@
+version: 1
+dataset_name: synthetic_demo_2026
+privacy:
+  min_count: 5
+  zero_policy: structural
+  max_suppression_ratio: 0.35
+  max_suppression_rounds: 100
+  structural_zero_cells:
+    - table: age_by_sex
+      row: U
+      col: "65+"
+tables:
+  - id: age_by_sex
+    source: age_by_sex.csv
+    row_dim: sex
+    col_dim: age_band
+    value: count
+    row_order: [F, M, U]
+    col_order: ["0-17", "18-34", "35-64", "65+"]
+    missing_cell_policy: error
+  - id: region_by_age
+    source: region_by_age.csv
+    row_dim: region
+    col_dim: age_band
+    value: count
+    row_order: [R01, R02, R03, R04]
+    col_order: ["0-17", "18-34", "35-64", "65+"]
+    missing_cell_policy: error
+    loss_weights:
+      - row: R02
+        col: "65+"
+        weight: 0.5

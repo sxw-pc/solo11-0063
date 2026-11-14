@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小域遮审台 · 内部审计报告</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#667085; --line:#d8dee9; --paper:#f4f1ea; --panel:#fffdf8; --accent:#a33d2f; --ok:#216e52; --warn:#8a5b14; --bad:#a32323; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:14px/1.65 "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+    main { width:min(1120px, calc(100% - 32px)); margin:28px auto 72px; }
+    header { padding:28px 32px; background:var(--ink); color:#fffaf0; border-radius:18px; box-shadow:0 14px 34px rgba(23,32,51,.18); }
+    h1 { margin:0 0 8px; font-size:30px; letter-spacing:.04em; }
+    header p { margin:0; color:#d7dce6; }
+    h2 { margin:36px 0 12px; font-size:21px; border-bottom:1px solid var(--line); padding-bottom:8px; }
+    h3 { margin:24px 0 8px; font-size:16px; }
+    .meta, .grid { display:grid; gap:12px; }
+    .meta { grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-top:20px; }
+    .meta div { background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.16); border-radius:10px; padding:10px 12px; }
+    .meta span { display:block; color:#b9c1d0; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+    .grid { grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+    .card strong { display:block; font-size:24px; }
+    .card span { color:var(--muted); font-size:12px; }
+    .note, .blocked { background:#fff7e8; border:1px solid #ecd9ad; border-radius:12px; padding:12px 15px; color:#59431c; }
+    .blocked { background:#fff0f0; border-color:#efc4c4; color:#732020; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+    th, td { text-align:left; vertical-align:top; padding:9px 11px; border-bottom:1px solid var(--line); }
+    th { background:#ede9df; font-size:12px; letter-spacing:.03em; }
+    tr:last-child td { border-bottom:0; }
+    code { font-family:"Cascadia Mono", Consolas, monospace; font-size:12px; }
+    .pill { display:inline-block; border-radius:999px; padding:2px 9px; font-size:12px; font-weight:700; background:#ede9df; }
+    .pass { color:var(--ok); background:#e6f4ee; }
+    .fail, .blocked-pill { color:var(--bad); background:#fbe8e8; }
+    .muted { color:var(--muted); }
+    .fingerprint { word-break:break-all; color:var(--muted); font-size:11px; }
+    footer { margin-top:42px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); padding-top:16px; }
+    @media print { body { background:#fff; } main { width:100%; margin:0; } header { box-shadow:none; } .card, table { break-inside:avoid; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>小域遮审台 · 内部审计报告</h1>
+    <p>内部材料。被抑制的原始计数不在此报告中出现；原始值仅保存在本地 SQLite 审计台账。</p>
+    <div class="meta">
+      <div><span>数据集</span>{{ report.dataset_name }}</div>
+      <div><span>运行 ID</span><code>{{ report.run_id }}</code></div>
+      <div><span>运行状态</span>{{ report.status }}</div>
+      <div><span>契约版本</span>{{ report.contract_version }}</div>
+      <div><span>开始时间</span>{{ report.started_at }}</div>
+      <div><span>结束时间</span>{{ report.finished_at }}</div>
+      <div><span>契约哈希</span><code class="fingerprint">{{ report.contract_hash }}</code></div>
+    </div>
+  </header>
+
+  <h2>总览</h2>
+  <div class="grid">
+    <div class="card"><strong>{{ report.summary.table_count }}</strong><span>表数量</span></div>
+    <div class="card"><strong>{{ report.summary.cell_count }}</strong><span>源单元格总数</span></div>
+    <div class="card"><strong>{{ report.summary.primary_count }} / {{ report.summary.secondary_count }}</strong><span>主抑制 / 互补抑制</span></div>
+    <div class="card"><strong>{{ "%.2f%%"|format(report.summary.suppression_ratio * 100) }}</strong><span>整体抑制比例</span></div>
+    <div class="card"><strong>{{ "通过" if report.summary.verify_passed else "失败" }}</strong><span>边际与反推核验</span></div>
+    <div class="card"><strong>{{ report.summary.blocked_table_count }}</strong><span>阻断表数量</span></div>
+  </div>
+
+  <h3>风险类别统计</h3>
+  <p class="muted">blocked 以表为单位计数；safe、small_count、sampling_zero、forced 以源单元格为单位计数。</p>
+  <table>
+    <thead><tr><th>类别</th><th>计数</th></tr></thead>
+    <tbody>
+      {% for label, count in report.summary.risk_class_counts.items() %}
+      <tr><td><code>{{ label }}</code></td><td>{{ count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if report.summary.block_reasons %}
+  <h2>阻断原因</h2>
+  {% for reason in report.summary.block_reasons %}
+  <p class="blocked"><code>{{ reason.code }}</code> · {{ reason.table_id }} · {{ reason.detail }}</p>
+  {% endfor %}
+  {% endif %}
+
+  <h2>输入文件</h2>
+  <table>
+    <thead><tr><th>表</th><th>文件</th><th>SHA-256</th></tr></thead>
+    <tbody>
+      {% for item in report.inputs %}
+      <tr><td><code>{{ item.table_id }}</code></td><td>{{ item.source }}</td><td class="fingerprint">{{ item.sha256 }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% for table in report.tables %}
+  <h2>表 <code>{{ table.table_id }}</code></h2>
+  <div class="grid">
+    <div class="card"><strong>{{ table.row_count }} × {{ table.col_count }}</strong><span>{{ table.row_dim }} × {{ table.col_dim }}</span></div>
+    <div class="card"><strong>{{ "%.2f%%"|format(table.suppression_ratio * 100) }}</strong><span>抑制比例</span></div>
+    <div class="card"><strong>{{ table.primary_count }} / {{ table.secondary_count }}</strong><span>主抑制 / 互补抑制</span></div>
+    <div class="card"><strong>{{ "%.2f%%"|format(table.info_loss.suppressed_count_sum_ratio * 100) }}</strong><span>被抑制计数总和占比</span></div>
+    <div class="card"><strong>{{ "%.2f%%"|format(table.info_loss.max_row_suppression_ratio * 100) }}</strong><span>最大单行抑制比例</span></div>
+    <div class="card"><strong>{{ "%.2f%%"|format(table.info_loss.max_col_suppression_ratio * 100) }}</strong><span>最大单列抑制比例</span></div>
+  </div>
+  <p>状态：<span class="pill {% if table.table_status == 'blocked' %}blocked-pill{% endif %}">{{ table.table_status }}</span>
+     · 风险级别：<code>{{ table.risk_level }}</code>
+     · 源文件：{{ table.source }}</p>
+  {% if table.block_reasons %}
+    {% for reason in table.block_reasons %}
+    <p class="blocked"><code>{{ reason.code }}</code> · {{ reason.detail }}</p>
+    {% endfor %}
+  {% endif %}
+
+  <h3>核验结果</h3>
+  <table>
+    <thead><tr><th>检查</th><th>结果</th><th>证据摘要</th></tr></thead>
+    <tbody>
+      {% for check in table.verification.checks %}
+      <tr>
+        <td><code>{{ check.name }}</code></td>
+        <td><span class="pill {{ 'pass' if check.result == 'pass' else 'fail' }}">{{ check.result }}</span></td>
+        <td>{{ check.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>被抑制单元格（不含原始计数）</h3>
+  <table>
+    <thead><tr><th>行键</th><th>列键</th><th>类型</th><th>风险类别</th><th>指纹</th></tr></thead>
+    <tbody>
+      {% for cell in table.suppressed_cells %}
+      <tr>
+        <td>{{ cell.row }}</td><td>{{ cell.col }}</td>
+        <td>{{ cell.suppression_type }}</td><td>{{ cell.risk_category }}</td>
+        <td class="fingerprint">{{ cell.fingerprint }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">无被抑制单元格。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endfor %}
+
+  <footer>
+    本报告由确定性工程规则生成，不承诺形式化最优抑制或满足全部统计披露控制标准。
+    报告自包含，不加载任何外部脚本、样式、字体或网络资源。
+  </footer>
+</main>
+</body>
+</html>

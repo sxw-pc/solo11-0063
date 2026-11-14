@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ run.id }} · 小域遮审台{% endblock %}
+{% block content %}
+<nav class="breadcrumb"><a href="{{ url_for('index') }}">最近运行</a><span>/</span><span>{{ run.id }}</span></nav>
+
+<section class="run-head">
+  <div>
+    <p class="eyebrow">RUN DETAIL</p>
+    <h1>{{ run.dataset_name }}</h1>
+    <p class="mono muted">{{ run.id }}</p>
+  </div>
+  <span class="status status-lg status-{{ run.status }}">{{ run.status }}</span>
+</section>
+
+<div class="meta-strip">
+  <div><span>开始</span>{{ run.started_at }}</div>
+  <div><span>结束</span>{{ run.finished_at }}</div>
+  <div><span>契约版本</span>v{{ run.summary.contract_version if run.summary.contract_version is defined else "1" }}</div>
+  <div><span>契约哈希</span><code>{{ run.contract_hash[:16] }}…</code></div>
+</div>
+
+<section class="metric-grid">
+  <article class="metric"><span>源单元格</span><strong>{{ run.summary.cell_count }}</strong></article>
+  <article class="metric"><span>主抑制</span><strong>{{ run.summary.primary_count }}</strong></article>
+  <article class="metric"><span>互补抑制</span><strong>{{ run.summary.secondary_count }}</strong></article>
+  <article class="metric"><span>抑制比例</span><strong>{{ "%.2f%%"|format(run.summary.suppression_ratio * 100) }}</strong></article>
+  <article class="metric"><span>核验</span><strong class="{{ 'good' if run.summary.verify_passed else 'bad' }}">{{ "通过" if run.summary.verify_passed else "失败" }}</strong></article>
+</section>
+
+{% if run.summary.block_reasons %}
+<section class="alert alert-error">
+  <h2>阻断原因</h2>
+  {% for reason in run.summary.block_reasons %}
+  <p><code>{{ reason.code }}</code> · {{ reason.table_id }} · {{ reason.detail }}</p>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="section-head">
+  <div><p class="eyebrow">RISK CLASSES</p><h2>风险分布</h2></div>
+  <span class="muted">blocked 以表计；其余类别以源单元格计</span>
+</section>
+<div class="risk-grid">
+  {% for label, count in run.summary.risk_class_counts.items() %}
+  <div class="risk-card risk-{{ label }}"><span>{{ label }}</span><strong>{{ count }}</strong></div>
+  {% endfor %}
+</div>
+
+{% for table in tables %}
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <p class="eyebrow">TABLE</p>
+      <h2><code>{{ table.table_id }}</code></h2>
+      <p class="muted">{{ table.meta.row_dim }} × {{ table.meta.col_dim }} · {{ table.source if table.source is defined else table.meta.source_name }}</p>
+    </div>
+    <div class="panel-badges">
+      <span class="status status-{{ table.table_status }}">{{ table.table_status }}</span>
+      <span class="badge">risk: {{ table.meta.risk_level }}</span>
+    </div>
+  </div>
+
+  <div class="metric-grid compact">
+    <article class="metric"><span>行 × 列</span><strong>{{ table.row_count }} × {{ table.col_count }}</strong></article>
+    <article class="metric"><span>主 / 补抑制</span><strong>{{ table.primary_count }} / {{ table.secondary_count }}</strong></article>
+    <article class="metric"><span>抑制比例</span><strong>{{ "%.2f%%"|format(table.suppression_ratio * 100) }}</strong></article>
+    <article class="metric"><span>被抑制计数占比</span><strong>{{ "%.2f%%"|format(table.meta.info_loss.suppressed_count_sum_ratio * 100) }}</strong></article>
+    <article class="metric"><span>最大行 / 列抑制</span><strong>{{ "%.2f%%"|format(table.meta.info_loss.max_row_suppression_ratio * 100) }} / {{ "%.2f%%"|format(table.meta.info_loss.max_col_suppression_ratio * 100) }}</strong></article>
+  </div>
+
+  <h3>风险类别</h3>
+  <div class="risk-grid small">
+    {% for label, count in table.meta.risk_class_counts.items() %}
+    <div class="risk-card risk-{{ label }}"><span>{{ label }}</span><strong>{{ count }}</strong></div>
+    {% endfor %}
+  </div>
+
+  {% if table.block_reasons %}
+  <div class="alert alert-error">
+    {% for reason in table.block_reasons %}
+    <p><code>{{ reason.code }}</code> · {{ reason.detail }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <h3>核验结果</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>检查</th><th>结果</th><th>来源</th><th>证据摘要</th></tr></thead>
+      <tbody>
+        {% for check in checks_by_table.get(table.table_id, []) %}
+        <tr>
+          <td><code>{{ check.name }}</code></td>
+          <td><span class="status status-{{ 'ok' if check.result == 'pass' else 'verify_failed' }}">{{ check.result }}</span></td>
+          <td class="muted">{{ check.source }}</td>
+          <td>{{ check.evidence.detail if check.evidence.detail is defined else "—" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">暂无核验记录。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+
+<section class="section-head">
+  <div><p class="eyebrow">ARTIFACTS</p><h2>输出文件</h2></div>
+  <span class="muted">页面不展示被抑制原始值；原始值仅在本地 SQLite 台账中</span>
+</section>
+<div class="artifact-list">
+  {% for artifact in artifacts %}
+  <div class="artifact">
+    <span class="artifact-kind">{{ artifact.kind }}</span>
+    <strong>{{ artifact.name }}</strong>
+    <code class="muted">{{ artifact.sha256[:20] }}…</code>
+  </div>
+  {% else %}
+  <p class="muted">没有记录的输出文件。</p>
+  {% endfor %}
+</div>
+{% endblock %}

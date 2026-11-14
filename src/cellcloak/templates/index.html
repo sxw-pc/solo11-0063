@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}最近运行 · 小域遮审台{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">AGGREGATED TABLE RELEASE REVIEW</p>
+    <h1>发布前的小计数审查，<br>在一台机器上闭环。</h1>
+    <p class="lede">读取本地聚合 CSV 与 YAML 发布契约，执行主抑制、互补抑制、边际反推核验，并把证据留在本地 SQLite 台账。</p>
+  </div>
+  <div class="hero-card">
+    <span class="pill-label">内置演示</span>
+    <h2>合成数据，安全试跑</h2>
+    <p>按钮只执行仓库内置 <code>fixtures/demo</code>。不接受上传路径、任意文件或远程地址。</p>
+    {% if demo_available %}
+    <form method="post" action="{{ url_for('run_demo') }}">
+      <button class="button primary" type="submit">运行演示 fixture</button>
+    </form>
+    {% else %}
+    <p class="notice">演示 fixture 未找到，请检查项目文件是否完整。</p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="section-head">
+  <div>
+    <p class="eyebrow">LEDGER</p>
+    <h2>最近运行</h2>
+  </div>
+  <span class="muted">展示最近 20 条本地台账记录</span>
+</section>
+
+{% if runs %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>运行 ID</th>
+        <th>状态</th>
+        <th>数据集</th>
+        <th class="num">表</th>
+        <th class="num">抑制比例</th>
+        <th class="num">主 / 补</th>
+        <th>开始时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td><a class="run-link" href="{{ url_for('run_detail', run_id=run.id) }}"><code>{{ run.id }}</code></a></td>
+        <td><span class="status status-{{ run.status }}">{{ run.status }}</span></td>
+        <td>{{ run.dataset_name }}</td>
+        <td class="num">{{ run.table_count }}</td>
+        <td class="num">{{ "%.2f%%"|format(run.suppression_ratio * 100) }}</td>
+        <td class="num">{{ run.primary_count }} / {{ run.secondary_count }}</td>
+        <td class="muted">{{ run.started_at }}</td>
+      </tr>
+      {% if run.blocked_reasons %}
+      <tr class="subrow">
+        <td colspan="7">
+          <span class="blocked-inline">阻断：</span>
+          {% for reason in run.blocked_reasons %}
+            <code>{{ reason.code }}</code>{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty">
+  <h3>还没有运行记录</h3>
+  <p>点击上方“运行演示 fixture”，或使用 CLI：<code>python -m cellcloak run --contract fixtures/demo/contract.yml --out out/demo</code></p>
+</div>
+{% endif %}
+{% endblock %}

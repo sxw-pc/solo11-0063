@@ -1,0 +1,15 @@
+version: 1
+dataset_name: synthetic_blocked_2026
+privacy:
+  min_count: 5
+  zero_policy: protect_sampling
+  max_suppression_ratio: 0.35
+tables:
+  - id: high_risk
+    source: high_risk.csv
+    row_dim: region
+    col_dim: age_band
+    value: count
+    row_order: [R01, R02, R03, R04]
+    col_order: ["0-17", "18-34", "35-64", "65+"]
+    missing_cell_policy: error

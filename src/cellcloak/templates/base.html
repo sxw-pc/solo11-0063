@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}小域遮审台{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}">
+      <span class="brand-mark" aria-hidden="true">CC</span>
+      <span>
+        <strong>小域遮审台</strong>
+        <small>Cellcloak · 本地披露审查</small>
+      </span>
+    </a>
+    <nav aria-label="主导航">
+      <a href="{{ url_for('index') }}" class="{{ 'active' if page == 'home' else '' }}">最近运行</a>
+      <a href="{{ url_for('diff_page') }}" class="{{ 'active' if page == 'diff' else '' }}">运行对比</a>
+    </nav>
+  </header>
+
+  <main class="shell">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes" role="status">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>完全离线 · 仅监听本机 · 仅处理合成或已获授权的聚合数据</span>
+    <span>工程启发式抑制，不承诺形式化最优</span>
+  </footer>
+</body>
+</html>
