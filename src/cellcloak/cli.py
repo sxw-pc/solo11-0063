@@ -18,6 +18,7 @@ from .config import (
 )
 from .diffing import compare_runs
 from .errors import CellcloakError
+from .forget import forget_run
 from .ledger import Ledger
 from .pipeline import execute_run, reverify_run
 
@@ -123,6 +124,36 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_forget(args: argparse.Namespace) -> int:
+    outcome = forget_run(_ledger(args), args.run, args.reason, dry_run=args.dry_run)
+    if args.json:
+        _print_json(outcome.as_dict())
+    else:
+        print(f"run_id: {outcome.run_id}")
+        print(f"reason: {outcome.reason_code}")
+        if outcome.state == "dry_run":
+            print("state: dry-run (no changes applied)")
+        elif outcome.state == "already_purged":
+            print("state: already purged (audit tombstone retained)")
+        else:
+            print(f"state: purged{' (resumed interrupted purge)' if outcome.resumed else ''}")
+        for plan in outcome.files:
+            print(f"  {plan.outcome:<22} {plan.kind:<10} {plan.path}")
+        if outcome.db_rows:
+            counts = " ".join(f"{name}={count}" for name, count in sorted(outcome.db_rows.items()))
+            label = "db rows that would be removed" if outcome.state == "dry_run" else "db rows removed"
+            print(f"{label}: {counts}")
+        if outcome.result:
+            print(f"result: {outcome.result['outcome']}")
+    if (
+        outcome.state in ("purged", "already_purged")
+        and outcome.result
+        and outcome.result["outcome"] != "purged"
+    ):
+        return 5
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         host = require_loopback(args.host)
@@ -171,6 +202,17 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--db")
     diff.add_argument("--json", action="store_true")
     diff.set_defaults(func=_cmd_diff)
+
+    forget = sub.add_parser(
+        "forget",
+        help="purge a run's raw cell records and internal reports, keeping an audit tombstone",
+    )
+    forget.add_argument("--run", required=True)
+    forget.add_argument("--reason", required=True, help="operator reason code, e.g. retention-2026")
+    forget.add_argument("--dry-run", action="store_true", help="print the deletion plan without changes")
+    forget.add_argument("--db")
+    forget.add_argument("--json", action="store_true")
+    forget.set_defaults(func=_cmd_forget)
 
     serve = sub.add_parser("serve", help="start the loopback-only local web UI")
     serve.add_argument("--host", default=DEFAULT_HOST)

@@ -82,3 +82,25 @@ def test_run_page_never_returns_raw_cell_values(tmp_path):
     assert "原始计数" not in html or "不展示" in html
     assert "http://" not in html
     assert "https://" not in html
+
+
+def test_purged_run_shows_tombstone_page_and_stays_listed(tmp_path):
+    app, client = _app(tmp_path)
+    client.post("/demo", follow_redirects=True)
+    ledger = app.extensions["ledger"]
+    run = ledger.list_runs()[0]
+    from cellcloak.forget import forget_run
+
+    forget_run(ledger, run["id"], "retention-2026")
+
+    response = client.get(f"/runs/{run['id']}")
+    assert response.status_code == 410
+    html = response.get_data(as_text=True)
+    assert "审计墓碑" in html
+    assert str(tmp_path) not in html
+
+    index = client.get("/")
+    assert index.status_code == 200
+    index_html = index.get_data(as_text=True)
+    assert run["id"] in index_html
+    assert "purged" in index_html

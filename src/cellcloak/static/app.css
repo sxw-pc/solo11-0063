@@ -143,6 +143,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .status-ok { color: var(--good); background: var(--good-bg); }
 .status-blocked, .status-verify_failed, .status-absent { color: var(--bad); background: var(--bad-bg); }
+.status-purged, .status-purging { color: var(--muted); background: #ece9df; }
 .status-lg { font-size: 13px; padding: 7px 14px; }
 .status-pass { color: var(--good); background: var(--good-bg); }
 .status-fail { color: var(--bad); background: var(--bad-bg); }

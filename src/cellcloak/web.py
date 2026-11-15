@@ -71,6 +71,13 @@ def create_app(
         detail = ledger.get_run_detail(run_id)
         if detail is None:
             abort(404)
+        tombstone = detail.get("tombstone")
+        if tombstone is not None:
+            if tombstone["state"] == "purging":
+                message = "该运行的原始记录正在清除中，清除完成后仅保留审计墓碑。"
+            else:
+                message = "该运行的原始计数与内部报告已按保留策略清除，仅保留审计墓碑。"
+            return render_template("error.html", code=410, message=message, page="error"), 410
         grouped = _checks_by_table(detail["checks"])
         artifacts = [
             {"name": Path(item["path"]).name, "kind": item["kind"], "sha256": item["sha256"]}

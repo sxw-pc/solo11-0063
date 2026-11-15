@@ -124,8 +124,50 @@ TableSpec ── ingest.load_table ──► TableModel（完整矩阵、边际�
 | `cells` | 每个单元格的原始计数、抑制类型、风险类别、指纹；**仅内部** |
 | `checks` | 每项核验结果与证据摘要 |
 | `artifacts` | 产物路径、类型、SHA-256 |
+| `purge_tombstones` | 清除墓碑：`run_id`、状态（`purging`/`purged`）、原因码、时间戳、聚合结果 |
 
-台账连接在每次操作中创建并提交，启用外键；所有写操作使用 SQLite 事务。`runs` 不覆盖历史记录。`diff` 比较抑制比例、主/补抑制、阻断状态、表状态与公开 CSV 哈希。
+台账连接在每次操作中创建并提交，启用外键；所有写操作使用 SQLite 事务。`runs` 不覆盖历史记录。`diff` 比较抑制比例、主/补抑制、阻断状态、表状态与公开 CSV 哈希。`purge_tombstones` 不挂外键：清除会级联删除 `runs` 行，墓碑必须独立存活。表结构通过 `CREATE TABLE IF NOT EXISTS` 随连接自动迁移，旧数据库打开即升级。
+
+## 保留期清除（forget）
+
+`forget --run <id> --reason <code>` 删除指定 run 的原始单元格记录与内部报告文件。数据库事务与文件删除无法共同原子提交，因此采用**路线 A** 的可恢复生命周期：
+
+```text
+事务 1：写入 purging 墓碑（含候选文件清单 manifest）
+   ↓ 崩溃 → 重跑 forget 从墓碑 manifest 续做
+逐项：重新核验候选文件并删除（幂等）
+   ↓ 崩溃 → 已删文件在续做时得到 already_absent
+事务 2：级联删除 runs/tables/cells/checks/artifacts 行，
+        同事务把墓碑标为 purged、写入聚合结果、清空 manifest
+```
+
+事务 2 把路线 A 描述中的“级联清空”和“标记 purged”合并为一个原子提交，消除了两者之间的崩溃窗口；若该事务崩溃则整体回滚，续做时两个步骤一起重做。
+
+### 为什么选路线 A
+
+- **重试幂等**：墓碑先行使意图先于任何变更持久化；之后每一步都幂等——文件删除按 SHA 核对、对缺失文件容忍，`DELETE ... WHERE run_id` 天然幂等，最终 UPDATE 幂等。任意崩溃点都有明确的重入语义，且续做不依赖可能已被级联删除的 `artifacts` 行（候选清单存在墓碑 manifest 里）。
+- **共享目录**：文件删除从不只信台账路径。每个候选在删除当下重新对照活动状态：磁盘 SHA、其他保留 run 的引用查询、输出清单确认。共享 `--out` 目录或外部改动只会把结果变成 `kept_*`，不会误删。台账行的删除不依赖文件结果，文件被保留不会回滚原始计数的清除。
+- **后来 run 覆盖旧路径**：`emit_outputs` 会在同一 `--out` 目录重写同名文件并登记新哈希，旧 run 的哈希随之失配 → `kept_hash_mismatch`；若后来的 run 仍保留，其 `artifacts` 行还会触发 `kept_shared_reference`。路线 B（先备份/暂存文件、再一个事务清库、最后清理暂存）在“文件已暂存、事务未提交”的窗口崩溃时，需要在暂存目录与数据库两个持久状态之间做恢复取舍，且暂存目录本身同样面临共享与覆盖问题；路线 A 让台账墓碑成为唯一事实来源，文件系统只是可反复重验的状态，更契合“无法共同原子提交”的现实。
+
+### 文件安全核验
+
+候选文件仅为台账中该 run 登记的内部报告（`audit_json`/`audit_md`/`audit_html`）。删除前依次检查：
+
+1. 最终路径不是符号链接（`kept_symlink`）；
+2. 解析后的路径仍在该 run 的输出目录内（`kept_path_escape`，拒绝 `..` 与符号链接穿越）；
+3. 文件存在且为普通文件（否则 `already_absent` / `kept_not_a_file`）；
+4. 输出目录的 `.cellcloak-output.json` 可解析且为本工具格式（`version: 1`），否则 `kept_marker_invalid`；
+5. 相对路径在清单 `artifacts` 中，否则 `kept_not_in_manifest`；
+6. 未被其他保留 run 的 `artifacts` 行引用，否则 `kept_shared_reference`；
+7. 当前磁盘 SHA-256 等于该 run 登记的哈希，否则 `kept_hash_mismatch`。
+
+全部通过才 `unlink`。任何保留都写入当次结果与墓碑聚合（按类别计数、按 artifact kind 记录结果），墓碑不持久化任何文件路径。
+
+### 墓碑与可见性
+
+- 清除后 `purge_tombstones` 只保留：`run_id`、`state = purged`、原因码、开始/完成时间、聚合结果（各类别文件计数、按 kind 的结果、各表删除行数）。不含原始计数、坐标键、内部报告路径；`purging` 期间的工作清单（manifest）在标为 `purged` 的同事务内置空。
+- `runs` 列表把墓碑合并进结果：`purged` run 以墓碑行出现，`purging` run 覆盖显示状态。`get_run_detail` 对已清除 run 返回空表/空核验加墓碑。`verify` 对 `purging`/`purged` run 明确返回对应状态（退出码 4），不会用不完整状态继续核验，也不会表现得像 run 从未存在。`diff` 拒绝比较已清除 run（`E_RUN_PURGED`/`E_RUN_PURGING`）。Web 详情页对墓碑 run 返回 410。
+- 重复执行 `forget` 是幂等空操作（`already_purged`）。`--dry-run` 只读：不碰数据库与文件，输出与真实执行相同的逐项判定。
 
 ## Web
 

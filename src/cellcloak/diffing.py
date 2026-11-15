@@ -39,6 +39,15 @@ def compare_runs(ledger: Ledger, run_a: str, run_b: str) -> dict[str, Any]:
     if detail_a is None or detail_b is None:
         missing = run_a if detail_a is None else run_b
         raise LedgerError("E_RUN_NOT_FOUND", "run is not present in the local ledger", table_id=missing)
+    for detail in (detail_a, detail_b):
+        tombstone = detail.get("tombstone")
+        if tombstone is not None:
+            code = "E_RUN_PURGED" if tombstone["state"] == "purged" else "E_RUN_PURGING"
+            raise LedgerError(
+                code,
+                "run raw records were purged; only the audit tombstone remains, nothing to compare",
+                table_id=detail["run"]["id"],
+            )
     basic_a = _basic(detail_a)
     basic_b = _basic(detail_b)
     hashes_a = _public_hashes(detail_a)

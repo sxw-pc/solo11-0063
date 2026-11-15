@@ -111,10 +111,38 @@ python -m cellcloak run --contract <path> --out <dir> [--db <sqlite>] [--json]
 python -m cellcloak runs [--limit 20] [--db <sqlite>] [--json]
 python -m cellcloak verify --run <run-id> [--db <sqlite>] [--json]
 python -m cellcloak diff --run-a <run-id> --run-b <run-id> [--db <sqlite>] [--json]
+python -m cellcloak forget --run <run-id> --reason <code> [--dry-run] [--db <sqlite>] [--json]
 python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 ```
 
 `verify` 会从 SQLite 重建单元格矩阵并重新执行独立核验，把结果以 `source = reverify` 追加到 `checks`。失败时写入 `verify_failed`；原本已 `blocked` 的运行保留 `blocked` 状态，但命令仍返回非零。
+
+## 数据保留与清除（forget）
+
+原始计数长期保存在本地台账 `cells` 表中。保留期结束后，用 `forget` 删除指定 run 的敏感数据：
+
+```bash
+# 先看不修改任何内容的清单
+python -m cellcloak forget --run <run-id> --reason retention-2026 --dry-run
+
+# 实际清除
+python -m cellcloak forget --run <run-id> --reason retention-2026
+```
+
+清除内容：
+
+- SQLite 中该 run 的 `runs`/`tables`/`cells`/`checks`/`artifacts` 行（级联删除，含全部原始计数、坐标键与内部报告路径）；
+- 该 run 登记的内部报告文件 `audit/report.json`、`report.md`、`report.html`。
+
+`public/*.csv` 不含原始计数，属于可发布物，默认保留。`--reason` 是操作者给出的原因码（1–64 位字母数字及 `. _ : -`），会记入墓碑。
+
+**文件删除是保守的。** 每个候选文件必须同时满足：在台账中登记于该 run、被输出目录的 `.cellcloak-output.json` 清单确认、解析后仍在该 run 的输出目录内、不是符号链接、未被其他保留 run 的台账记录引用、且当前磁盘 SHA-256 与该 run 登记的哈希一致。任一不满足（后来的 run 覆盖了同目录文件、外部改写、marker 损坏或缺失、路径逃逸、符号链接）都会保留该文件并在结果中给出具体原因（如 `kept_hash_mismatch`、`kept_shared_reference`、`kept_marker_invalid`）。
+
+**清除后保留最小审计墓碑**：`run_id`、删除时间、原因码与聚合删除结果（不含原始计数、坐标键和文件路径）。因此 `runs` 仍会列出该 run（状态 `purged`），`verify` 明确返回 `purged`/`purging` 而不是假装它从未存在，`diff` 会拒绝比较已清除的 run。
+
+**生命周期可恢复**（路线 A）：先事务性写入 `purging` 墓碑，再逐项核对并删除文件，最后在同一事务内级联删除台账行并把墓碑标为 `purged`。任何一步中断后重跑同一命令即可安全续做；中途失败时 `verify` 返回 `purging`。重复执行已完成的清除是幂等空操作。
+
+退出码：`0` 清除完成且无保留文件（或 dry-run、已清除）；`5` 清除完成但有文件被保留，需人工跟进（重复执行时若结果仍含保留文件同样返回 `5`）；`2` 参数或台账错误。
 
 ## 退出码
 
@@ -124,7 +152,8 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 | `1` | 非预期本地运行错误 |
 | `2` | 契约/CSV/台账/参数错误 |
 | `3` | 流水线完成但被阻断，未生成公开表 |
-| `4` | 核验失败 |
+| `4` | 核验失败（含对已清除 run 执行 `verify`） |
+| `5` | `forget` 完成但部分文件被保留 |
 
 ## 常见错误码
 
@@ -145,6 +174,8 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 | `E_SUPPRESSION_MAX_ROUNDS` | 互补抑制未在轮次上限内稳定 |
 | `E_OUTPUT_NOT_EMPTY` / `E_OUTPUT_MARKER` | 输出目录保护或清单异常 |
 | `E_RUN_NOT_FOUND` / `E_RUN_DUPLICATE` | 台账运行不存在/重复 |
+| `E_RUN_PURGED` / `E_RUN_PURGING` | 运行原始记录已清除/正在清除，仅剩审计墓碑 |
+| `E_FORGET_REASON` | `forget --reason` 原因码格式非法 |
 | `E_LOOPBACK_ONLY` | 拒绝绑定非回环地址 |
 
 阻断原因与异常错误码分开使用：阻断不是程序失败，而是发布判定。
@@ -167,7 +198,8 @@ src/cellcloak/
   suppress.py   主抑制、互补抑制、阻断判定
   verify.py     独立边际与反推核验
   report.py     public/ 与 audit/ 产物
-  ledger.py     SQLite 台账
+  ledger.py     SQLite 台账（含清除墓碑）
+  forget.py     保留期清除生命周期与文件安全核验
   pipeline.py   端到端编排与重核验
   cli.py        命令行
   web.py        仅回环 Flask 页面

@@ -80,6 +80,62 @@ def test_verify_missing_run_returns_exit_two(tmp_path, capsys):
     assert "E_RUN_NOT_FOUND" in capsys.readouterr().err
 
 
+def test_forget_cli_dry_run_purge_and_repeat(tmp_path, capsys):
+    db = str(tmp_path / "ledger.sqlite3")
+    out = tmp_path / "out"
+    assert main(["run", "--contract", str(DEMO), "--out", str(out), "--db", db, "--json"]) == 0
+    run_id = _json_output(capsys)["run_id"]
+
+    assert main(["forget", "--run", run_id, "--reason", "retention-2026", "--db", db, "--dry-run"]) == 0
+    dry = capsys.readouterr().out
+    assert "dry-run" in dry
+    assert "would_delete" in dry
+    assert (out / "audit" / "report.json").is_file()
+
+    assert main(["forget", "--run", run_id, "--reason", "retention-2026", "--db", db, "--json"]) == 0
+    result = _json_output(capsys)
+    assert result["state"] == "purged"
+    assert result["result"]["outcome"] == "purged"
+    assert result["db_rows"]["cells"] > 0
+    assert not (out / "audit" / "report.json").exists()
+    assert (out / "public" / "region_by_age.csv").is_file()
+
+    assert main(["runs", "--db", db, "--json"]) == 0
+    runs = _json_output(capsys)
+    assert runs[0]["status"] == "purged"
+    assert runs[0]["tombstone"]["reason_code"] == "retention-2026"
+
+    assert main(["verify", "--run", run_id, "--db", db, "--json"]) == 4
+    verification = _json_output(capsys)
+    assert verification["status"] == "purged"
+    assert verification["passed"] is False
+
+    # Repeating the purge is an idempotent no-op.
+    assert main(["forget", "--run", run_id, "--reason", "retention-2026", "--db", db]) == 0
+    assert "already purged" in capsys.readouterr().out
+
+
+def test_forget_cli_kept_files_exit_five(tmp_path, capsys):
+    db = str(tmp_path / "ledger.sqlite3")
+    out = tmp_path / "out"
+    assert main(["run", "--contract", str(DEMO), "--out", str(out), "--db", db, "--json"]) == 0
+    run_id = _json_output(capsys)["run_id"]
+    (out / "audit" / "report.json").write_text('{"tampered": true}\n', encoding="utf-8")
+
+    assert main(["forget", "--run", run_id, "--reason", "retention-2026", "--db", db]) == 5
+    output = capsys.readouterr().out
+    assert "kept_hash_mismatch" in output
+    assert "purged_with_kept_files" in output
+
+
+def test_forget_cli_errors(tmp_path, capsys):
+    db = str(tmp_path / "ledger.sqlite3")
+    assert main(["forget", "--run", "run-missing", "--reason", "retention-2026", "--db", db]) == 2
+    assert "E_RUN_NOT_FOUND" in capsys.readouterr().err
+    assert main(["forget", "--run", "run-missing", "--reason", "bad reason!", "--db", db]) == 2
+    assert "E_FORGET_REASON" in capsys.readouterr().err
+
+
 def test_serve_refuses_non_loopback_and_invalid_port(tmp_path, capsys):
     db = str(tmp_path / "ledger.sqlite3")
     assert main(["serve", "--host", "0.0.0.0", "--port", "5017", "--db", db]) == 2

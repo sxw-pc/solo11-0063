@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS artifacts (
     kind TEXT NOT NULL,
     sha256 TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS purge_tombstones (
+    run_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    manifest_json TEXT,
+    result_json TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_checks_run ON checks(run_id);
 """
@@ -191,6 +200,8 @@ class Ledger:
         limit = max(1, min(int(limit), 500))
         with self._connection() as conn:
             rows = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            tombstone_rows = conn.execute("SELECT * FROM purge_tombstones").fetchall()
+        tombstones = {row["run_id"]: self._tombstone_dict(row) for row in tombstone_rows}
         result: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
@@ -202,14 +213,77 @@ class Ledger:
             item["table_count"] = summary.get("table_count", 0)
             item["cell_count"] = summary.get("cell_count", 0)
             item["blocked_reasons"] = summary.get("block_reasons", [])
+            tombstone = tombstones.pop(item["id"], None)
+            item["tombstone"] = tombstone
+            if tombstone is not None:
+                item["status"] = tombstone["state"]
             result.append(item)
-        return result
+        for tombstone in tombstones.values():
+            result.append(self._tombstone_listing(tombstone))
+        result.sort(key=lambda item: item["id"], reverse=True)
+        return result[:limit]
+
+    @staticmethod
+    def _tombstone_listing(tombstone: dict[str, Any]) -> dict[str, Any]:
+        """Shape a purged/purging run like a run row so listings never drop it."""
+
+        return {
+            "id": tombstone["run_id"],
+            "dataset_name": "",
+            "status": tombstone["state"],
+            "started_at": "",
+            "finished_at": tombstone["finished_at"] or "",
+            "contract_hash": "",
+            "contract_path": "",
+            "output_dir": "",
+            "summary": {},
+            "suppression_ratio": 0.0,
+            "primary_count": 0,
+            "secondary_count": 0,
+            "table_count": 0,
+            "cell_count": 0,
+            "blocked_reasons": [],
+            "tombstone": tombstone,
+        }
+
+    @staticmethod
+    def _tombstone_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "run_id": row["run_id"],
+            "state": row["state"],
+            "reason_code": row["reason_code"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "manifest": _loads(row["manifest_json"], None) if row["manifest_json"] else None,
+            "result": _loads(row["result_json"], None) if row["result_json"] else None,
+        }
+
+    def get_tombstone(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM purge_tombstones WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return self._tombstone_dict(row) if row is not None else None
 
     def get_run_detail(self, run_id: str) -> dict[str, Any] | None:
         with self._connection() as conn:
             run_row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            tombstone_row = conn.execute(
+                "SELECT * FROM purge_tombstones WHERE run_id = ?", (run_id,)
+            ).fetchone()
             if run_row is None:
-                return None
+                if tombstone_row is None:
+                    return None
+                tombstone = self._tombstone_dict(tombstone_row)
+                listing = self._tombstone_listing(tombstone)
+                run = {
+                    key: listing[key]
+                    for key in (
+                        "id", "dataset_name", "status", "started_at", "finished_at",
+                        "contract_hash", "contract_path", "output_dir", "summary",
+                    )
+                }
+                return {"run": run, "tables": [], "checks": [], "artifacts": [], "tombstone": tombstone}
             table_rows = conn.execute(
                 "SELECT * FROM tables WHERE run_id = ? ORDER BY table_id", (run_id,)
             ).fetchall()
@@ -221,6 +295,9 @@ class Ledger:
             ).fetchall()
         run = dict(run_row)
         run["summary"] = _loads(run.pop("summary_json"), {})
+        tombstone = self._tombstone_dict(tombstone_row) if tombstone_row is not None else None
+        if tombstone is not None:
+            run["status"] = tombstone["state"]
         tables = []
         for row in table_rows:
             item = dict(row)
@@ -238,6 +315,7 @@ class Ledger:
             "tables": tables,
             "checks": checks,
             "artifacts": [dict(row) for row in artifact_rows],
+            "tombstone": tombstone,
         }
 
     def load_for_verification(self, run_id: str) -> dict[str, Any]:
@@ -246,6 +324,19 @@ class Ledger:
         detail = self.get_run_detail(run_id)
         if detail is None:
             raise LedgerError("E_RUN_NOT_FOUND", "run is not present in the local ledger", table_id=run_id)
+        tombstone = detail.get("tombstone")
+        if tombstone is not None:
+            if tombstone["state"] == "purging":
+                raise LedgerError(
+                    "E_RUN_PURGING",
+                    "run raw records are being purged; re-run forget to finish before verifying",
+                    table_id=run_id,
+                )
+            raise LedgerError(
+                "E_RUN_PURGED",
+                "run raw records and internal reports were purged; only the audit tombstone remains",
+                table_id=run_id,
+            )
         with self._connection() as conn:
             rows = conn.execute(
                 "SELECT table_id, row_key, col_key, raw_count, suppression_type, risk_category, fingerprint "
@@ -286,3 +377,114 @@ class Ledger:
                 )
         except sqlite3.IntegrityError as exc:
             raise LedgerError("E_RUN_NOT_FOUND", "run is not present in the local ledger", table_id=run_id) from exc
+
+    def purge_candidates(self, run_id: str) -> list[dict[str, Any]]:
+        """Internal-report artifacts registered for a run, in stable order."""
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """SELECT path, kind, sha256 FROM artifacts
+                WHERE run_id = ? AND kind IN ('audit_json', 'audit_md', 'audit_html')
+                ORDER BY path""",
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def shared_reference_paths(self, run_id: str, paths: Sequence[str]) -> set[str]:
+        """Paths still referenced by other retained runs (any purge state)."""
+
+        if not paths:
+            return set()
+        placeholders = ", ".join("?" for _ in paths)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT path FROM artifacts WHERE run_id != ? AND path IN ({placeholders})",
+                (run_id, *paths),
+            ).fetchall()
+        return {row["path"] for row in rows}
+
+    def purge_row_counts(self, run_id: str) -> dict[str, int]:
+        """Row counts that a purge would cascade-delete; read-only."""
+
+        counts: dict[str, int] = {}
+        with self._connection() as conn:
+            for table in ("cells", "tables", "checks", "artifacts"):
+                counts[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (run_id,)
+                ).fetchone()[0]
+        return counts
+
+    def start_purge(
+        self,
+        run_id: str,
+        reason_code: str,
+        started_at: str,
+        manifest: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Durable `purging` tombstone; the resume anchor if the process dies."""
+
+        try:
+            with self._connection() as conn:
+                existing = conn.execute(
+                    "SELECT * FROM purge_tombstones WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if existing is not None:
+                    return self._tombstone_dict(existing)
+                run_row = conn.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+                if run_row is None:
+                    raise LedgerError(
+                        "E_RUN_NOT_FOUND", "run is not present in the local ledger", table_id=run_id
+                    )
+                conn.execute(
+                    """INSERT INTO purge_tombstones
+                    (run_id, state, reason_code, started_at, manifest_json)
+                    VALUES (?, 'purging', ?, ?, ?)""",
+                    (run_id, reason_code, started_at, _dumps(manifest)),
+                )
+        except sqlite3.IntegrityError:
+            # A concurrent forget registered the tombstone first; resume from it.
+            pass
+        tombstone = self.get_tombstone(run_id)
+        if tombstone is None:  # defensive: the insert above just committed
+            raise LedgerError("E_LEDGER_DB", "purge tombstone could not be persisted", path=self.db_path)
+        return tombstone
+
+    def finalize_purge(
+        self,
+        run_id: str,
+        finished_at: str,
+        files_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Cascade-delete the run's rows and mark the tombstone `purged`, atomically.
+
+        The aggregate result persisted on the tombstone contains no raw counts,
+        no cell coordinates and no file paths.
+        """
+
+        with self._connection() as conn:
+            tombstone = conn.execute(
+                "SELECT state FROM purge_tombstones WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if tombstone is None:
+                raise LedgerError(
+                    "E_RUN_NOT_FOUND", "purge tombstone is not present in the local ledger", table_id=run_id
+                )
+            counts: dict[str, int] = {}
+            for table in ("cells", "tables", "checks", "artifacts"):
+                counts[table] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (run_id,)
+                ).fetchone()[0]
+            conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+            result = {
+                "outcome": files_result["outcome"],
+                "files": files_result["files"],
+                "kinds": files_result["kinds"],
+                "db_rows": counts,
+            }
+            conn.execute(
+                """UPDATE purge_tombstones
+                SET state = 'purged', finished_at = ?, result_json = ?, manifest_json = NULL
+                WHERE run_id = ?""",
+                (finished_at, _dumps(result), run_id),
+            )
+        return result

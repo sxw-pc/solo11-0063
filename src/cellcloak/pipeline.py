@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract import Contract, load_contract
+from .errors import LedgerError
 from .ingest import load_table
 from .ledger import Ledger
 from .model import (
@@ -221,7 +222,15 @@ def _model_from_ledger(table: dict[str, Any]) -> TableModel:
 
 
 def reverify_run(ledger: Ledger, run_id: str) -> ReverifyOutcome:
-    state = ledger.load_for_verification(run_id)
+    try:
+        state = ledger.load_for_verification(run_id)
+    except LedgerError as exc:
+        # A run whose raw records are gone (or going) must never look simply
+        # "missing" or vacuously verified; report the purge state explicitly.
+        if exc.code in ("E_RUN_PURGED", "E_RUN_PURGING"):
+            status = "purged" if exc.code == "E_RUN_PURGED" else "purging"
+            return ReverifyOutcome(run_id=run_id, passed=False, status=status, tables=[])
+        raise
     tables: list[dict[str, Any]] = []
     checks: list[dict[str, Any]] = []
     passed = True
