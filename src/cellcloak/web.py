@@ -17,6 +17,7 @@ from .diffing import compare_runs
 from .errors import CellcloakError, LedgerError
 from .ledger import Ledger
 from .pipeline import execute_run
+from .report import read_current_release
 
 
 def _checks_by_table(checks: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -59,9 +60,19 @@ def create_app(
     @app.get("/")
     def index() -> str:
         runs = ledger.list_runs(limit=20)
+        release = read_current_release(demo_output)
+        current_release: dict[str, Any] | None = None
+        if release and release.get("run_id"):
+            current_release = {
+                "run_id": release["run_id"],
+                "status": release.get("status"),
+                "layout": release["layout"],
+                "linked": ledger.get_run_detail(release["run_id"]) is not None,
+            }
         return render_template(
             "index.html",
             runs=runs,
+            current_release=current_release,
             demo_available=contract.is_file(),
             page="home",
         )

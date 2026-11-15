@@ -21,6 +21,24 @@
   </div>
 </section>
 
+{% if current_release %}
+<section class="section-head">
+  <div>
+    <p class="eyebrow">CURRENT RELEASE</p>
+    <h2>当前发布</h2>
+  </div>
+  <span class="muted">输出目录当前指向的完整发布代</span>
+</section>
+<p class="notice">
+  演示输出目录当前发布的是运行 <code>{{ current_release.run_id }}</code>
+  （{{ current_release.layout }} 布局{% if current_release.status %}，状态
+  <span class="status status-{{ current_release.status }}">{{ current_release.status }}</span>{% endif %}）。
+  {% if current_release.linked %}
+  <a href="{{ url_for('run_detail', run_id=current_release.run_id) }}">查看该运行的台账记录</a>
+  {% endif %}
+</p>
+{% endif %}
+
 <section class="section-head">
   <div>
     <p class="eyebrow">LEDGER</p>

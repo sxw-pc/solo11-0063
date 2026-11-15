@@ -24,7 +24,8 @@ TableSpec ── ingest.load_table ──► TableModel（完整矩阵、边际�
                     ┌─────────────────┴──────────────────┐
                     ▼                                    ▼
        report.emit_outputs                        ledger.Ledger
-       public/ 与 audit/                          SQLite 台账
+       generations/<run_id>/                      SQLite 台账
+       + current 指针
                     │                                    │
                     └──────────── pipeline ──────────────┘
                                  │
@@ -113,7 +114,21 @@ TableSpec ── ingest.load_table ──► TableModel（完整矩阵、边际�
 - `public/<table_id>.csv` 仅对 `ok` 运行生成。被抑制单元格写为 `NA`，保留行/列/总合计，供下游发布分析使用。由于所有单元素行/列已消除，这些合计不能直接反推任一抑制值。
 - `audit/report.json` 是机器可读的完整证据；`report.md` 与自包含 `report.html` 供人工审阅。HTML 的所有样式内联，不引用外部脚本、字体、样式或图片。
 - 报告不包含抑制单元格原始计数；原始计数只进入本地 SQLite `cells` 表。报告中的输入哈希、风险类别、计数统计与指纹用于复核。
-- 输出目录带 `.cellcloak-output.json` 清单。工具只清理清单中记录的自有文件；遇到无清单但已有 `public/` 或 `audit/` 内容的目录会拒绝覆盖。
+
+### 按代发布与提交顺序
+
+一次发布的公开表、三份审计报告和清单 `.cellcloak-output.json` 构成**同一代产物**，写入 `generations/<run_id>/`：
+
+1. **暂存**：所有文件先写入 `generations/.staging-<run_id>/`。此阶段崩溃只影响暂存目录，当前发布不变。
+2. **封存**：暂存目录经一次 `os.rename` 成为 `generations/<run_id>/`，此后不再修改。artifact 的路径与 SHA-256 在封存后计算，台账引用的即是最终位置。
+3. **台账提交**：`ledger.record_run` 在单个 SQLite 事务中写入运行记录与 artifact 清单。失败则该代成为无台账记录的封存孤儿，永远不会被指向；重试使用新的 run ID。
+4. **发布**：`release.publish()` 用一次 `os.replace` 原子替换 `current` 符号链接——这是整代唯一的提交点。失败则运行已入台账、文件全部可核对，但当前发布仍是上一代。
+
+SQLite 与文件系统无法跨资源原子提交，以上顺序保证两个不变量：`current` 永远指向已入台账的完整一代；台账中每个 artifact 路径都指向仍存在且摘要匹配的文件（封存代不被改写、不被工具自动删除）。`public/`、`audit/` 与根清单是指向 `current/...` 的稳定符号链接，浏览者只会看到同一 `run_id` 的完整公开包。被阻断或核验失败的运行照常走完整流程并成为当前发布，但其 `public/` 为空——审计报告可见，公开表不出现。
+
+清理时点：`.staging-*` 暂存目录来自中断的运行，从未封存、未入台账、未被指向，下一次运行开始时直接删除；封存代（包括从未成为当前发布的孤儿代）一律保留，操作员可手工清理既不在台账中、也非当前指针目标的代。中断的运行不做断点续跑，重试总是产生新的 run ID 与新的一代。
+
+旧版输出目录（真实 `public/`/`audit/` 加 v1 清单文件）保持兼容读取：`read_current_release` 与 `cellcloak current` 可直接显示；首次发布会先校验旧清单（损坏则报 `E_OUTPUT_MARKER` 并拒绝），把旧内容整体移动到 `generations/legacy-<run_id>/` 归档，再按新布局发布。无清单但已有 `public/` 或 `audit/` 内容的目录仍报 `E_OUTPUT_NOT_EMPTY` 拒绝覆盖。
 
 ## SQLite 台账
 

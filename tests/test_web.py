@@ -46,6 +46,19 @@ def test_demo_button_runs_only_bundled_fixture(tmp_path):
     assert detail["tables"][1]["verify_passed"] is True
 
 
+def test_home_shows_current_release_after_demo_run(tmp_path):
+    app, client = _app(tmp_path)
+    html = client.get("/").get_data(as_text=True)
+    assert "当前发布" not in html
+
+    client.post("/demo", follow_redirects=True)
+    run = app.extensions["ledger"].list_runs()[0]
+    html = client.get("/").get_data(as_text=True)
+    assert "当前发布" in html
+    assert run["id"] in html
+    assert "generations" in html
+
+
 def test_diff_page_compares_two_runs(tmp_path):
     app, client = _app(tmp_path)
     for _ in range(2):

@@ -79,19 +79,27 @@ CSV 为长格式，所需列为契约中的行维度、列维度与计数值。�
 
 ```text
 out/demo/
-├── public/
-│   ├── age_by_sex.csv
-│   └── region_by_age.csv
-├── audit/
-│   ├── report.json
-│   ├── report.md
-│   └── report.html
-└── .cellcloak-output.json
+├── current -> generations/run-...      # 唯一提交点：原子切换的符号链接
+├── public -> current/public            # 稳定的浏览入口，随 current 指向切换
+├── audit -> current/audit
+├── .cellcloak-output.json -> current/.cellcloak-output.json
+└── generations/
+    └── run-2026…/                      # 每次运行一代，封存后不可变
+        ├── public/
+        │   ├── age_by_sex.csv
+        │   └── region_by_age.csv
+        ├── audit/
+        │   ├── report.json
+        │   ├── report.md
+        │   └── report.html
+        └── .cellcloak-output.json
 ```
 
-- `public/`：仅当整次运行状态为 `ok` 时生成。被抑制单元格写为 `NA`，同时保留行合计、列合计与总合计。不会写入被抑制原始计数。
+- 每次运行把公开表、三份审计报告和清单写入独立的 `generations/<run_id>/`，全部写完并封存后，先提交 SQLite 台账记录，再原子切换 `current` 指针。因此浏览 `public/`、`audit/` 时永远只看到同一 `run_id` 的完整发布代；中断的运行只留下未封存的暂存目录，不会成为当前发布。
+- 台账中每个 artifact 的路径指向封存代内的文件，代目录不被改写或自动清理，所以历史运行的路径与 SHA-256 始终可核对。`cellcloak current --out out/demo` 可查看输出目录当前发布的是哪一代。
+- `public/`：仅当整次运行状态为 `ok` 时填充。被抑制单元格写为 `NA`，同时保留行合计、列合计与总合计。不会写入被抑制原始计数。被阻断或核验失败的运行仍会成为当前发布（便于审阅审计报告），但其 `public/` 为空。
 - `audit/`：内部审计材料。包含契约与输入文件哈希、运行 ID、风险分类、抑制统计、阻断原因、边际/反推核验证据、被抑制单元格坐标与指纹、信息损失摘要。报告默认不展示被抑制原始值。
-- `.cellcloak-output.json`：工具自用的输出清单，只清理自己上次写入的文件，避免阻断运行时遗留旧公开表。
+- `.cellcloak-output.json`：该代的发布清单（版本、run_id、状态、产物相对路径）。旧版输出目录（真实 `public/`/`audit/` 加 v1 清单）仍可读取；首次发布会把旧内容整体归档到 `generations/legacy-<run_id>/` 后再切换布局。
 - SQLite 台账默认位于 `var/cellcloak.sqlite3`，可用 `--db` 或 `CELLCLOAK_DB` 指向别处。`cells` 表保存原始计数，仅限内部使用。
 
 ## 抑制规则
@@ -166,7 +174,7 @@ src/cellcloak/
   risk.py       主风险分类
   suppress.py   主抑制、互补抑制、阻断判定
   verify.py     独立边际与反推核验
-  report.py     public/ 与 audit/ 产物
+  report.py     按代发布 public/ 与 audit/ 产物、当前版本读取
   ledger.py     SQLite 台账
   pipeline.py   端到端编排与重核验
   cli.py        命令行

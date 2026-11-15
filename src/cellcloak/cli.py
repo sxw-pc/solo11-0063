@@ -20,6 +20,7 @@ from .diffing import compare_runs
 from .errors import CellcloakError
 from .ledger import Ledger
 from .pipeline import execute_run, reverify_run
+from .report import read_current_release
 
 
 def _ledger(args: argparse.Namespace) -> Ledger:
@@ -58,6 +59,34 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 3
     if outcome.status == "verify_failed":
         return 4
+    return 0
+
+
+def _cmd_current(args: argparse.Namespace) -> int:
+    release = read_current_release(args.out)
+    if args.json:
+        if release is None:
+            _print_json(None)
+        else:
+            _print_json(
+                {
+                    "run_id": release["run_id"],
+                    "status": release["status"],
+                    "layout": release["layout"],
+                    "generation_dir": str(release["generation_dir"]),
+                    "artifacts": [str(path) for path in release["artifacts"]],
+                }
+            )
+        return 0
+    if release is None:
+        print(f"no published release in {Path(args.out).expanduser().resolve()}")
+        return 0
+    print(f"run_id: {release['run_id']}")
+    if release["status"] is not None:
+        print(f"status: {release['status']}")
+    print(f"layout: {release['layout']}")
+    print(f"generation: {release['generation_dir']}")
+    print(f"artifacts: {len(release['artifacts'])}")
     return 0
 
 
@@ -152,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--db")
     run.add_argument("--json", action="store_true")
     run.set_defaults(func=_cmd_run)
+
+    current = sub.add_parser("current", help="show the release an output directory currently publishes")
+    current.add_argument("--out", required=True)
+    current.add_argument("--json", action="store_true")
+    current.set_defaults(func=_cmd_current)
 
     verify = sub.add_parser("verify", help="re-verify a recorded run independently")
     verify.add_argument("--run", required=True)

@@ -31,6 +31,32 @@ def test_run_runs_and_verify_workflow(tmp_path, capsys):
     assert verification["status"] == "ok"
 
 
+def test_current_reports_the_published_release(tmp_path, capsys):
+    db = str(tmp_path / "ledger.sqlite3")
+    out = str(tmp_path / "out")
+    assert main(["current", "--out", out, "--json"]) == 0
+    assert _json_output(capsys) is None
+
+    assert main(["run", "--contract", str(DEMO), "--out", out, "--db", db, "--json"]) == 0
+    outcome = _json_output(capsys)
+    assert main(["current", "--out", out, "--json"]) == 0
+    current = _json_output(capsys)
+    assert current["run_id"] == outcome["run_id"]
+    assert current["status"] == "ok"
+    assert current["layout"] == "generations"
+    assert len(current["artifacts"]) == 5
+    for path in current["artifacts"]:
+        assert Path(path).is_file()
+
+    # A blocked run becomes current with audit reports but no public tables.
+    assert main(["run", "--contract", str(BLOCKED), "--out", out, "--db", db]) == 3
+    capsys.readouterr()
+    assert main(["current", "--out", out]) == 0
+    text = capsys.readouterr().out
+    assert "status: blocked" in text
+    assert "layout: generations" in text
+
+
 def test_diff_cli(tmp_path, capsys):
     db = str(tmp_path / "ledger.sqlite3")
     for name in ("a", "b"):

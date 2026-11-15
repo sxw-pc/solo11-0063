@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .contract import Contract, load_contract
 from .ingest import load_table
@@ -88,7 +88,7 @@ def _ledger_payload(
     out_dir: Path,
     report: dict[str, Any],
     evaluations: list[EvaluatedTable],
-    artifacts: list[Artifact],
+    artifacts: Sequence[Artifact],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     table_records: list[dict[str, Any]] = []
     cell_records: list[dict[str, Any]] = []
@@ -182,17 +182,34 @@ def execute_run(
     finished_at = _now()
     report = build_report(contract, run_id, status, started_at, finished_at, evaluations)
     out_dir = Path(output_dir).expanduser().resolve()
-    artifacts = emit_outputs(out_dir, report, evaluations, publish=status == "ok")
+    # Commit protocol — SQLite and the filesystem cannot commit atomically
+    # together, so the order is fixed and each intermediate state is defined:
+    #   1. emit_outputs stages the full release (public tables, audit
+    #      reports, marker) and seals it as an immutable generation
+    #      directory. Nothing becomes visible as the current release yet.
+    #      A failure here leaves the previous release untouched and current.
+    #   2. ledger.record_run commits the run row plus artifact paths and
+    #      digests that point into the sealed generation. A failure here
+    #      leaves a sealed but unrecorded generation on disk; it is never
+    #      pointed to and a retry uses a fresh run ID.
+    #   3. release.publish() atomically flips the `current` pointer. A
+    #      failure here leaves the run fully recorded and its files
+    #      verifiable, while the previous release stays current.
+    # Therefore `current` only ever references a generation whose run is
+    # committed in the ledger, and ledger artifact paths always resolve to
+    # existing files with matching SHA-256.
+    release = emit_outputs(out_dir, report, evaluations, publish=status == "ok")
     payload = _ledger_payload(
-        contract, run_id, status, started_at, finished_at, out_dir, report, evaluations, artifacts
+        contract, run_id, status, started_at, finished_at, out_dir, report, evaluations, release.artifacts
     )
     ledger.record_run(*payload)
+    release.publish()
     return RunOutcome(
         run_id=run_id,
         status=status,
         output_dir=out_dir,
         report=report,
-        artifacts=artifacts,
+        artifacts=list(release.artifacts),
     )
 
 
