@@ -1,5 +1,10 @@
+import sqlite3
 from pathlib import Path
 
+import pytest
+
+from cellcloak import ledger as ledger_module
+from cellcloak.pipeline import reverify_run
 from cellcloak.web import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,3 +87,45 @@ def test_run_page_never_returns_raw_cell_values(tmp_path):
     assert "原始计数" not in html or "不展示" in html
     assert "http://" not in html
     assert "https://" not in html
+
+
+def test_run_page_groups_checks_by_attempt_with_lifecycle(tmp_path, monkeypatch):
+    app, client = _app(tmp_path)
+    client.post("/demo", follow_redirects=True)
+    ledger = app.extensions["ledger"]
+    run = ledger.list_runs()[0]
+    run_id = run["id"]
+
+    # A healthy reverify adds a completed reverify attempt.
+    reverify_run(ledger, run_id)
+
+    # Inject the update_status break to leave a visible interrupted attempt.
+    def boom(self, broken_run_id, status, *, conn=None):
+        raise RuntimeError("injected interruption")
+
+    monkeypatch.setattr(ledger_module.Ledger, "update_status", boom)
+    with pytest.raises(RuntimeError):
+        reverify_run(ledger, run_id)
+    monkeypatch.undo()
+
+    # Tamper a cell and reverify to record a completed failing attempt.
+    db = ledger.db_path
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE cells SET suppression_type='none' "
+            "WHERE run_id = ? AND table_id = 'region_by_age' "
+            "AND row_key = 'R01' AND col_key = '65+'",
+            (run_id,),
+        )
+    reverify_run(ledger, run_id)
+
+    response = client.get(f"/runs/{run_id}")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "核验尝试审计" in html
+    assert "ATTEMPT #1" in html and "ATTEMPT #4" in html
+    # Lifecycle labels are rendered distinctly.
+    assert "completed" in html and "interrupted" in html
+    assert "本 attempt 在封存前中断" in html
+    assert "快照 SHA" in html
+    assert "raw_count" not in html

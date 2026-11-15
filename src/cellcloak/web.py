@@ -26,6 +26,30 @@ def _checks_by_table(checks: list[dict[str, Any]]) -> dict[str, list[dict[str, A
     return grouped
 
 
+def _attempt_groups(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """Shape verification attempts for the run page, newest attempts last."""
+
+    groups: list[dict[str, Any]] = []
+    for attempt in detail.get("attempts", []):
+        groups.append(
+            {
+                "attempt_id": attempt["attempt_id"],
+                "sequence_no": attempt["sequence_no"],
+                "source": attempt["source"],
+                "status": attempt["status"],
+                "result": attempt["result"],
+                "snapshot_sha": attempt["snapshot_sha"],
+                "started_at": attempt["started_at"],
+                "finished_at": attempt["finished_at"],
+                "checks_by_table": _checks_by_table(attempt["checks"]),
+                "table_ids": sorted(
+                    {check.get("table_id") or "run" for check in attempt["checks"]}
+                ),
+            }
+        )
+    return groups
+
+
 def create_app(
     db_path: str | Path | None = None,
     demo_out: str | Path | None = None,
@@ -72,6 +96,7 @@ def create_app(
         if detail is None:
             abort(404)
         grouped = _checks_by_table(detail["checks"])
+        attempt_groups = _attempt_groups(detail)
         artifacts = [
             {"name": Path(item["path"]).name, "kind": item["kind"], "sha256": item["sha256"]}
             for item in detail["artifacts"]
@@ -82,6 +107,7 @@ def create_app(
             run=detail["run"],
             tables=detail["tables"],
             checks_by_table=grouped,
+            attempt_groups=attempt_groups,
             artifacts=artifacts,
             page="run",
         )

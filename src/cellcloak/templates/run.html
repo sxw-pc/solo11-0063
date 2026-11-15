@@ -37,6 +37,59 @@
 {% endif %}
 
 <section class="section-head">
+  <div><p class="eyebrow">VERIFY ATTEMPTS</p><h2>核验尝试审计</h2></div>
+  <span class="muted">每次核验生成不可变 attempt；runs.status 仅由最新快照一致的已完成 attempt 投影</span>
+</section>
+{% for attempt in attempt_groups %}
+<section class="panel attempt-panel">
+  <div class="panel-head">
+    <div>
+      <p class="eyebrow">ATTEMPT #{{ attempt.sequence_no }} · {{ attempt.source }}</p>
+      <h2><code>{{ attempt.attempt_id }}</code></h2>
+      <p class="muted mono">
+        开始 {{ attempt.started_at }} · 结束 {{ attempt.finished_at if attempt.finished_at else "—" }}
+      </p>
+      <p class="muted mono">快照 SHA <code>{{ attempt.snapshot_sha[:16] }}…</code></p>
+    </div>
+    <div class="panel-badges">
+      <span class="status status-lg status-attempt-{{ attempt.status }}">{{ attempt.status }}</span>
+      {% if attempt.result %}
+      <span class="status status-lg status-{{ attempt.result }}">{{ attempt.result }}</span>
+      {% else %}
+      <span class="badge">无封存结果</span>
+      {% endif %}
+    </div>
+  </div>
+  {% if attempt.status == "stale" %}
+  <div class="alert alert-warn"><p>输入快照在读取与封存之间发生变化：本 attempt 未投影状态，请重新运行核验。</p></div>
+  {% elif attempt.status == "interrupted" %}
+  <div class="alert alert-warn"><p>本 attempt 在封存前中断：没有写入任何 checks，也未改变 runs.status。</p></div>
+  {% endif %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>表</th><th>检查</th><th>结果</th><th>证据摘要</th></tr></thead>
+      <tbody>
+        {% for table_id in attempt.table_ids %}
+        {% for check in attempt.checks_by_table.get(table_id, []) %}
+        <tr>
+          <td><code>{{ table_id }}</code></td>
+          <td><code>{{ check.name }}</code></td>
+          <td><span class="status status-{{ 'ok' if check.result == 'pass' else 'verify_failed' }}">{{ check.result }}</span></td>
+          <td>{{ check.evidence.detail if check.evidence.detail is defined else "—" }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr><td colspan="4" class="muted">本 attempt 没有封存 checks。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<section class="panel"><p class="muted">暂无核验 attempt 记录。</p></section>
+{% endfor %}
+
+<section class="section-head">
   <div><p class="eyebrow">RISK CLASSES</p><h2>风险分布</h2></div>
   <span class="muted">blocked 以表计；其余类别以源单元格计</span>
 </section>

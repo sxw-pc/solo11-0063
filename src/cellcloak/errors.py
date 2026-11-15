@@ -54,3 +54,18 @@ class LedgerError(CellcloakError):
 
 class PipelineError(CellcloakError):
     """The pipeline cannot produce a trustworthy result."""
+
+
+class VerifySnapshotError(PipelineError):
+    """A verification attempt's inputs changed between the read and the commit."""
+
+    def __init__(self, run_id: str, attempt_id: int, expected_sha: str, actual_sha: str) -> None:
+        super().__init__(
+            "E_VERIFY_SNAPSHOT_CONFLICT",
+            "verification input snapshot changed during the attempt; the attempt was "
+            "marked stale and the run status was not updated, retry verification",
+            table_id=run_id,
+        )
+        self.attempt_id = attempt_id
+        self.expected_sha = expected_sha
+        self.actual_sha = actual_sha

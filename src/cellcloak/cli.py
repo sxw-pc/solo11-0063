@@ -17,7 +17,7 @@ from .config import (
     validate_port,
 )
 from .diffing import compare_runs
-from .errors import CellcloakError
+from .errors import CellcloakError, VerifySnapshotError
 from .ledger import Ledger
 from .pipeline import execute_run, reverify_run
 
@@ -80,18 +80,46 @@ def _cmd_runs(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
-    outcome = reverify_run(_ledger(args), args.run)
+    try:
+        outcome = reverify_run(_ledger(args), args.run)
+    except VerifySnapshotError as exc:
+        # The inputs changed mid-attempt: the attempt is sealed as stale, the
+        # run status is untouched, and the caller is asked to retry.
+        if args.json:
+            _print_json(
+                {
+                    "run_id": args.run,
+                    "attempt_id": exc.attempt_id,
+                    "attempt_status": "stale",
+                    "passed": None,
+                    "status": None,
+                    "retryable": True,
+                    "error": exc.code,
+                }
+            )
+        else:
+            print(f"run_id: {args.run}")
+            print(f"attempt_id: {exc.attempt_id}")
+            print("attempt: stale")
+            print(f"retry: verification inputs changed ({exc.code})")
+        return 2
     if args.json:
         _print_json(
             {
                 "run_id": outcome.run_id,
+                "attempt_id": outcome.attempt_id,
+                "attempt_status": outcome.attempt_status,
                 "passed": outcome.passed,
                 "status": outcome.status,
+                "snapshot_sha": outcome.snapshot_sha,
                 "tables": outcome.tables,
             }
         )
     else:
         print(f"run_id: {outcome.run_id}")
+        print(f"attempt_id: {outcome.attempt_id}")
+        print(f"attempt: {outcome.attempt_status}")
+        print(f"snapshot: {outcome.snapshot_sha[:16]}…")
         print(f"verify: {'passed' if outcome.passed else 'failed'}")
         print(f"status: {outcome.status}")
         for table in outcome.tables:

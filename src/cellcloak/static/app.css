@@ -187,6 +187,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .alert h2 { font-size: 1.05rem; }
 .alert p { margin: 0 0 4px; }
 .alert-error { background: var(--bad-bg); border-color: #efc4c4; color: #732020; }
+.alert-warn { background: var(--warn-bg); border-color: #e6d29a; color: var(--warn); }
+
+.attempt-panel { border-left: 4px solid var(--line-strong); }
+.status-attempt-completed { color: var(--good); background: var(--good-bg); }
+.status-attempt-interrupted, .status-attempt-stale { color: var(--warn); background: var(--warn-bg); }
 
 .artifact-list { display: grid; gap: 8px; }
 .artifact { display: grid; grid-template-columns: 160px 1fr auto; gap: 14px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px; font-size: 13px; }

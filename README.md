@@ -114,7 +114,7 @@ python -m cellcloak diff --run-a <run-id> --run-b <run-id> [--db <sqlite>] [--js
 python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 ```
 
-`verify` 会从 SQLite 重建单元格矩阵并重新执行独立核验，把结果以 `source = reverify` 追加到 `checks`。失败时写入 `verify_failed`；原本已 `blocked` 的运行保留 `blocked` 状态，但命令仍返回非零。
+`verify` 会从单一 SQLite 读事务重建单元格矩阵、计算输入快照 SHA，并为每次核验创建一条不可变 **verify attempt**（带 attempt ID、开始/结束时间、状态与快照哈希）后重新执行独立核验。checks、attempt 封存结果与 `runs.status` 在同一事务提交；提交前若输入快照已变化，attempt 标为 `stale`、不改状态并返回可重试错误，计算/写入中断则留下可见的 `interrupted` attempt 且旧结果保持一致。重新运行 verify 总是新建 attempt 并保留完整历史；失败时写入 `verify_failed`（原本已 `blocked` 的运行保留 `blocked`），通过时非 blocked 状态回到 `ok`。旧库自动迁移，历史 `source='reverify'` 检查收编为 `legacy` attempt。CLI 文本/JSON 与运行详情页均返回或展示 attempt ID、状态与结果；`diff` 不把 attempt 数量算作数据差异。
 
 ## 退出码
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract import Contract, load_contract
+from .errors import VerifySnapshotError
 from .ingest import load_table
 from .ledger import Ledger
 from .model import (
@@ -36,8 +37,11 @@ class RunOutcome:
 @dataclass
 class ReverifyOutcome:
     run_id: str
+    attempt_id: str
+    attempt_status: str
     passed: bool
     status: str
+    snapshot_sha: str
     tables: list[dict[str, Any]]
 
 
@@ -221,64 +225,102 @@ def _model_from_ledger(table: dict[str, Any]) -> TableModel:
 
 
 def reverify_run(ledger: Ledger, run_id: str) -> ReverifyOutcome:
-    state = ledger.load_for_verification(run_id)
+    # Single read transaction: run/table/cell facts plus the canonical input
+    # snapshot are taken together, and an immutable attempt row is opened.
+    state = ledger.begin_verification(run_id)
+    attempt_pk = state["attempt_pk"]
+    attempt_id = state["attempt_id"]
+    snapshot_sha = state["snapshot_sha"]
+    current_status = state["run"]["status"]
     tables: list[dict[str, Any]] = []
     checks: list[dict[str, Any]] = []
     passed = True
-    for table in state["tables"]:
-        try:
-            model = _model_from_ledger(table)
-        except ValueError as exc:
-            passed = False
-            checks.append(
-                {
-                    "table_id": table["table_id"],
-                    "name": "ledger_matrix_complete",
-                    "result": "fail",
-                    "evidence": {"detail": str(exc)},
-                }
-            )
-            continue
-        suppressed: dict[tuple[str, str], SuppressionReason] = {}
-        for cell in table["cells"]:
-            if cell["suppression_type"] == SUPPRESSION_NONE:
+    try:
+        for table in state["tables"]:
+            try:
+                model = _model_from_ledger(table)
+            except ValueError as exc:
+                passed = False
+                checks.append(
+                    {
+                        "table_id": table["table_id"],
+                        "name": "ledger_matrix_complete",
+                        "result": "fail",
+                        "evidence": {"detail": str(exc)},
+                    }
+                )
                 continue
-            suppressed[(cell["row_key"], cell["col_key"])] = SuppressionReason(
-                kind=cell["suppression_type"],
-                risk_category=cell["risk_category"],
-                detail="restored from local ledger for independent re-verification",
-                round_no=0,
+            suppressed: dict[tuple[str, str], SuppressionReason] = {}
+            for cell in table["cells"]:
+                if cell["suppression_type"] == SUPPRESSION_NONE:
+                    continue
+                suppressed[(cell["row_key"], cell["col_key"])] = SuppressionReason(
+                    kind=cell["suppression_type"],
+                    risk_category=cell["risk_category"],
+                    detail="restored from local ledger for independent re-verification",
+                    round_no=0,
+                )
+            primary = {
+                (cell["row_key"], cell["col_key"])
+                for cell in table["cells"]
+                if cell["suppression_type"] == "primary"
+            }
+            result = verify_table(
+                model,
+                suppressed,
+                primary_coords=primary,
+                max_suppression_ratio=table["meta"].get("max_suppression_ratio"),
             )
-        primary = {
-            (cell["row_key"], cell["col_key"])
-            for cell in table["cells"]
-            if cell["suppression_type"] == "primary"
-        }
-        result = verify_table(
-            model,
-            suppressed,
-            primary_coords=primary,
-            max_suppression_ratio=table["meta"].get("max_suppression_ratio"),
+            passed = passed and result.passed
+            tables.append({"table_id": model.table_id, "passed": result.passed})
+            for check in result.checks:
+                checks.append(
+                    {
+                        "table_id": model.table_id,
+                        "name": check.name,
+                        "result": "pass" if check.passed else "fail",
+                        "evidence": {"detail": check.detail, "source": "reverify"},
+                    }
+                )
+        if not passed:
+            new_status = "blocked" if current_status == "blocked" else "verify_failed"
+        else:
+            new_status = current_status if current_status in {"ok", "blocked"} else "ok"
+        # One sealing transaction: the whole check set, attempt result/end
+        # timestamp and the runs.status projection commit together, after the
+        # input snapshot is re-checked against the facts being written.
+        sealed = ledger.complete_verification(
+            run_id,
+            attempt_pk,
+            attempt_id,
+            snapshot_sha,
+            checks,
+            passed,
+            new_status,
+            tables,
         )
-        passed = passed and result.passed
-        tables.append({"table_id": model.table_id, "passed": result.passed})
-        for check in result.checks:
-            checks.append(
-                {
-                    "table_id": model.table_id,
-                    "name": check.name,
-                    "result": "pass" if check.passed else "fail",
-                    "evidence": {"detail": check.detail, "source": "reverify"},
-                }
+        if sealed.get("stale"):
+            # The stale attempt was already sealed durably; surface a
+            # retryable error without touching the projected run status.
+            raise VerifySnapshotError(
+                run_id, attempt_pk, snapshot_sha, sealed["actual_snapshot_sha"]
             )
-    ledger.clear_reverify_checks(run_id)
-    if checks:
-        ledger.add_checks(run_id, checks, source="reverify")
-    current_status = state["run"]["status"]
-    if not passed:
-        new_status = "blocked" if current_status == "blocked" else "verify_failed"
-    else:
-        new_status = current_status if current_status in {"ok", "blocked"} else "ok"
-    if new_status != current_status:
-        ledger.update_status(run_id, new_status)
-    return ReverifyOutcome(run_id=run_id, passed=passed, status=new_status, tables=tables)
+    except VerifySnapshotError:
+        # The sealing transaction already recorded a visible stale attempt;
+        # do not overwrite that terminal status.
+        raise
+    except Exception:
+        # A failure before sealing never pretends to have completed: the
+        # attempt stays visible as interrupted and the previously projected
+        # run status remains untouched.
+        ledger.mark_attempt_interrupted(attempt_pk)
+        raise
+    return ReverifyOutcome(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        attempt_status="completed",
+        passed=passed,
+        status=new_status,
+        snapshot_sha=sealed["snapshot_sha"],
+        tables=tables,
+    )

@@ -106,7 +106,14 @@ TableSpec ── ingest.load_table ──► TableModel（完整矩阵、边际�
 
 运行状态判定顺序：存在阻断表 → `blocked`；否则核验失败 → `verify_failed`；否则 `ok`。核验失败不生成公开表。
 
-`verify --run` 从 SQLite 重建矩阵与抑制映射，再运行同一独立核验，并把结果追加为 `source = reverify` 的 checks。原运行已被阻断时保留 `blocked` 状态。
+`verify --run` 从单一 SQLite 读事务重建矩阵与抑制映射、计算规范输入快照 SHA，并打开一条不可变 **verify attempt** 审计记录后再运行同一独立核验。封存时在**单个事务**内写入整组 checks、attempt 结果/结束时间与 `runs.status` 投影，并在提交前重新计算快照 SHA：
+
+- 每次 `verify` 都新建 attempt（`source=reverify`），初始建仓核验作为 `source=run` 的 attempt；历史 attempt 与 checks 永不覆盖。
+- attempt 状态机：`interrupted`（已开启但封存前中断，可见且不伪装完成）→ `completed`（`result=pass/fail`）或 `stale`（读取与封存之间 run/table/cell 事实发生变化，不投影状态并返回可重试错误）。
+- `runs.status` 只是最新一条快照仍一致的已完成 attempt 的投影：失败时 `blocked` 保持 `blocked`，否则写 `verify_failed`；通过时 `blocked` 保持 `blocked`，其他状态回到 `ok`。
+- 封存事务中任何异常都会整体回滚：上一条 completed attempt、其 checks 与 `runs.status` 保持一致，中断的 attempt 留为 `interrupted`。
+- 旧库打开时自动迁移：历史 `source='reverify'` checks 收编为一条 `source=legacy` 的已完成 attempt，证据不丢失。
+- `diff` 只比较两次运行的当前 status、表格与公开产物，attempt 数量不计入数据差异。
 
 ## 报告与发布
 
@@ -122,14 +129,15 @@ TableSpec ── ingest.load_table ──► TableModel（完整矩阵、边际�
 | `runs` | 运行 ID、数据集、状态、开始/结束、契约哈希、输出目录、汇总 JSON |
 | `tables` | 表维度、主/补抑制数、比例、状态、阻断原因、元数据 |
 | `cells` | 每个单元格的原始计数、抑制类型、风险类别、指纹；**仅内部** |
-| `checks` | 每项核验结果与证据摘要 |
+| `verify_attempts` | 不可变核验尝试：attempt ID、序号、来源（run/reverify/legacy）、状态、结果、输入快照 SHA、开始/结束时间 |
+| `checks` | 每项核验结果与证据摘要，经 `attempt_pk` 归属到具体 attempt |
 | `artifacts` | 产物路径、类型、SHA-256 |
 
-台账连接在每次操作中创建并提交，启用外键；所有写操作使用 SQLite 事务。`runs` 不覆盖历史记录。`diff` 比较抑制比例、主/补抑制、阻断状态、表状态与公开 CSV 哈希。
+台账连接在每次操作中创建并提交，启用外键；所有写操作使用 SQLite 事务。`runs` 与 `verify_attempts` 不覆盖历史记录；attempt 的 checks、结果封存与状态投影在同一事务内同成同败。`diff` 比较抑制比例、主/补抑制、阻断状态、表状态与公开 CSV 哈希，不比较 attempt 数量。
 
 ## Web
 
-Flask 应用只由 CLI 在回环地址启动。页面数据均来自本地台账；不展示 `cells` 原始计数。演示按钮调用同一个 `execute_run`，契约固定为仓库内置 `fixtures/demo/contract.yml`，没有上传或远程抓取入口。响应带 CSP、`X-Frame-Options: DENY`、`nosniff` 等本地安全头。
+Flask 应用只由 CLI 在回环地址启动。页面数据均来自本地台账；不展示 `cells` 原始计数。运行详情页按 attempt 分组展示每条核验尝试的开始/结束时间、`pass/fail/stale/interrupted` 状态与 checks，初始 `source=run` 核验与各次 reverify attempt 分开陈列。演示按钮调用同一个 `execute_run`，契约固定为仓库内置 `fixtures/demo/contract.yml`，没有上传或远程抓取入口。响应带 CSP、`X-Frame-Options: DENY`、`nosniff` 等本地安全头。
 
 ## 确定性、边界与限制
 
