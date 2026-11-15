@@ -79,6 +79,11 @@ def build_report(
     started_at: str,
     finished_at: str,
     evaluations: list[EvaluatedTable],
+    *,
+    group_reviews: tuple[dict[str, Any], ...] = (),
+    joint_events: tuple[dict[str, Any], ...] = (),
+    joint_checks: tuple[dict[str, Any], ...] = (),
+    strategy: str | None = None,
 ) -> dict[str, Any]:
     tables: list[dict[str, Any]] = []
     risk_totals = {label: 0 for label in RISK_LABELS}
@@ -88,6 +93,7 @@ def build_report(
     total_secondary = 0
     blocked_tables: list[dict[str, str]] = []
     verify_passed = True
+    grouped_tables = {table_id for group in group_reviews for table_id in group["table_ids"]}
 
     for evaluation in evaluations:
         model = evaluation.model
@@ -114,6 +120,7 @@ def build_report(
                 "suppression_type": reason.kind,
                 "risk_category": reason.risk_category,
                 "round": reason.round_no,
+                "propagated": reason.propagated,
             }
             for (row, col), reason in sorted(suppression.suppressed.items())
         ]
@@ -147,6 +154,7 @@ def build_report(
                 },
                 "suppressed_cells": suppressed_cells,
                 "verification": _verification_payload(evaluation.verification),
+                "joint_review": model.table_id in grouped_tables,
             }
         )
         total_cells += model.cell_count()
@@ -164,6 +172,13 @@ def build_report(
         "blocked_table_count": sum(table["table_status"] == "blocked" for table in tables),
         "block_reasons": blocked_tables,
         "verify_passed": verify_passed,
+        "joint_verify_passed": all(check["result"] == "pass" for check in joint_checks)
+        and verify_passed,
+        "shared_group_count": len(group_reviews),
+        "shared_group_blocked_count": sum(
+            group["status"] == "blocked" for group in group_reviews
+        ),
+        "strategy": strategy or "local_then_propagation_closure",
         "risk_class_counts": risk_totals,
         "risk_class_note": "blocked counts tables; all other labels count source cells",
     }
@@ -177,11 +192,18 @@ def build_report(
         "status": status,
         "started_at": started_at,
         "finished_at": finished_at,
+        "strategy": strategy or "local_then_propagation_closure",
         "inputs": [
             {"table_id": evaluation.model.table_id, "source": evaluation.model.source_name,
              "sha256": evaluation.model.source_sha256}
             for evaluation in evaluations
         ],
+        "shared_relations": list(group_reviews),
+        "joint_verification": {
+            "passed": all(check["result"] == "pass" for check in joint_checks),
+            "checks": list(joint_checks),
+        },
+        "trigger_chain": list(joint_events),
         "summary": summary,
         "tables": tables,
     }

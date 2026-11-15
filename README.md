@@ -104,6 +104,33 @@ out/demo/
 
 这是工程启发式，不是形式化最优解，也不等于差分隐私。它会优先降低被隐藏的计数总量，但可能牺牲比理论最优更多的单元格。
 
+## 跨表共享关系
+
+若同一业务单元格会在多张表中以不同表 ID 再次发布，可在契约中用 `shared_cells` 显式声明别名：
+
+```yaml
+shared_cells:
+  - name: under18_region_alias
+    cells:
+      - table: region_by_age
+        row: R01
+        col: "0-17"
+      - table: district_by_age
+        row: D07
+        col: "0-17"
+```
+
+只有被声明关联的表才做联合审查。流水线采用 **“先各表局部求解，再沿共享关系传播并做补抑制闭包”** 策略：
+
+1. 各表按原单表规则求解；未关联表的输出与旧版本完全一致。
+2. 关系内任一成员被抑制时，其余成员也在各自表内被抑制（源为主抑制则传播为主抑制，否则为互补抑制）。
+3. 接收表重新消除行/列单未知数；新补抑制若命中其他关系成员会继续传播，直至不动点，形成可审计的跨表触发链。
+4. 每张表的抑制率仍按自己的 `max_suppression_ratio` 计算；任一成员因联合约束超限，整组阻断（`E_JOINT_GROUP_BLOCKED`），不会出现“每表单独通过”的误判。
+5. 已按 `structural` 策略公开为 0 的结构零若与被抑制单元格是同一业务值，会以 `E_JOINT_ALIAS_EXPOSURE` 整组阻断——继续补抑制无法撤回已公开的 0。
+6. 独立核验器 `verify_joint` 把别名视为同一未知数，检查别名暴露、关系完整性、逐表比例上限与跨表边际级联重建。
+
+审计报告的 `shared_relations`、`trigger_chain`、`joint_verification` 与真实执行的策略名同步进入 JSON/Markdown/HTML 和 SQLite 台账；`verify --run` 会从台账恢复声明并重新做整组联合核验。
+
 ## CLI
 
 ```text
@@ -143,6 +170,13 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 | `E_SUPPRESSION_RATIO_EXCEEDED` | 抑制比例超过契约上限 |
 | `E_SUPPRESSION_NO_CANDIDATE` | 单元素行/列已无可见单元格可补抑制 |
 | `E_SUPPRESSION_MAX_ROUNDS` | 互补抑制未在轮次上限内稳定 |
+| `E_SHARED_REFERENCE` / `E_SHARED_COORDINATE` | 共享关系引用未知表/坐标 |
+| `E_SHARED_GROUP_DUPLICATE` / `E_SHARED_CELL_DUPLICATE` | 关系名或别名重复 |
+| `E_SHARED_CONFLICT` / `E_SHARED_GROUP_SIZE` | 冲突映射或关系成员不足/未跨表 |
+| `E_JOINT_SUPPRESSION_RATIO_EXCEEDED` | 跨表传播使某表超过自身抑制率上限（阻断） |
+| `E_JOINT_GROUP_BLOCKED` | 关联组内任一表阻断，整组阻断（阻断） |
+| `E_JOINT_ALIAS_EXPOSURE` | 公开的结构零与被抑制单元格是同一业务值（阻断） |
+| `E_JOINT_SUPPRESSION_MAX_ROUNDS` | 跨表闭包未在轮次上限内稳定（阻断） |
 | `E_OUTPUT_NOT_EMPTY` / `E_OUTPUT_MARKER` | 输出目录保护或清单异常 |
 | `E_RUN_NOT_FOUND` / `E_RUN_DUPLICATE` | 台账运行不存在/重复 |
 | `E_LOOPBACK_ONLY` | 拒绝绑定非回环地址 |
@@ -161,11 +195,12 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 
 ```text
 src/cellcloak/
-  contract.py   契约解析与静态校验
+  contract.py   契约解析与静态校验（含 shared_cells）
   ingest.py     CSV 读取、矩阵完整性、边际计算
   risk.py       主风险分类
   suppress.py   主抑制、互补抑制、阻断判定
-  verify.py     独立边际与反推核验
+  joint.py      跨表共享关系传播与补抑制闭包
+  verify.py     独立边际、反推与跨表联合核验
   report.py     public/ 与 audit/ 产物
   ledger.py     SQLite 台账
   pipeline.py   端到端编排与重核验

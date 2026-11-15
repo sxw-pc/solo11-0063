@@ -265,6 +265,18 @@ class Ledger:
             if cursor.rowcount == 0:
                 raise LedgerError("E_RUN_NOT_FOUND", "run is not present in the local ledger", table_id=run_id)
 
+    def update_table_verification(
+        self, run_id: str, results: Mapping[str, bool]
+    ) -> None:
+        """Persist independent re-verification verdicts per table."""
+
+        with self._connection() as conn:
+            for table_id, passed in results.items():
+                conn.execute(
+                    "UPDATE tables SET verify_passed = ? WHERE run_id = ? AND table_id = ?",
+                    (int(bool(passed)), run_id, table_id),
+                )
+
     def clear_reverify_checks(self, run_id: str) -> None:
         with self._connection() as conn:
             conn.execute("DELETE FROM checks WHERE run_id = ? AND source = 'reverify'", (run_id,))

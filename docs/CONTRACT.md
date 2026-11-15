@@ -12,6 +12,7 @@
 | `dataset_name` | 非空字符串 | 是 | — | 合成数据集名称；不得写入真实个人信息 |
 | `privacy` | 映射 | 是 | — | 披露策略 |
 | `tables` | 非空列表 | 是 | — | 一张或多张二维计数表声明 |
+| `shared_cells` | 共享关系列表 | 否 | `[]` | 显式声明的跨表共享单元格关系；只有声明关联的表才做联合审查 |
 
 ### `privacy`
 
@@ -69,6 +70,55 @@
 
 权重只在计数相同时参与候选排序。候选的完整排序键是 `(计数, 权重, 行键, 列键)`，均为升序，从而保证确定性。
 
+### `shared_cells[]`
+
+`shared_cells` 用来声明“不同表 ID 下的同一个业务单元格”。只有在这里显式声明关联的表才会参与联合抑制与联合核验；没有出现在任何关系中的表，输出与单表行为完全一致。
+
+每一项：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `name` | 字符串 | 是 | 关系名，匹配 `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`，全契约唯一 |
+| `cells` | 列表（≥ 2 项） | 是 | 别名单元格；必须至少跨两张不同的已声明表 |
+
+`cells[]` 的每一项：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `table` | 字符串 | 是 | 必须引用已声明的表 |
+| `row` | 字符串 | 是 | 必须在目标的 `row_order` 中 |
+| `col` | 字符串 | 是 | 必须在目标的 `col_order` 中 |
+
+校验规则（加载契约时即报错）：
+
+- 引用未知表 → `E_SHARED_REFERENCE`；
+- 坐标不在声明顺序中 → `E_SHARED_COORDINATE`；
+- 关系名重复 → `E_SHARED_GROUP_DUPLICATE`；
+- 同一关系内重复同一坐标 → `E_SHARED_CELL_DUPLICATE`；
+- 同一关系内同一张表出现多次，或未跨两张表 → `E_SHARED_TABLE_DUPLICATE` / `E_SHARED_GROUP_SIZE`；
+- 同一个坐标出现在两个不同的关系中（冲突映射）→ `E_SHARED_CONFLICT`；
+- `cells` 少于两项 → `E_SHARED_GROUP_SIZE`。
+
+联合语义：
+
+1. 各表先按原单表规则局部求解。
+2. 若关系内任一成员被抑制，则其余成员在各自表内也被抑制：源为主抑制时传播为 `primary`，否则为 `secondary`。被传播的单元格带有 `propagated=true` 标记（仅台账/报告内部可见，不进入公开 CSV）。
+3. 传播后，接收表重新做行/列边际互补抑制；新补抑制若命中另一关系成员，会继续传播，直至不动点。报告记录完整的跨表触发链。
+4. 抑制率上限仍按每张表在 `privacy.max_suppression_ratio` 中各自计算。任一成员表因联合约束超限，整组阻断（`E_JOINT_GROUP_BLOCKED`），而不是只报告“每表验证通过”。
+5. 若 `structural_zero_cells` 中的单元格按 `structural` 策略以 0 公开，且它与某个被抑制单元格是同一业务值，则公开的 0 已直接泄露该值；这种关系无法靠继续补抑制修复，整组阻断并报 `E_JOINT_ALIAS_EXPOSURE`。若该结构零本身也被局部/联合抑制（因此最终以 `NA` 发布），则不构成暴露。
+
+```yaml
+shared_cells:
+  - name: under18_region_alias
+    cells:
+      - table: region_by_age
+        row: R01
+        col: "0-17"
+      - table: district_by_age
+        row: D07
+        col: "0-17"
+```
+
 ## 完整示例
 
 ```yaml
@@ -125,6 +175,7 @@ tables:
 - 版本、类型、枚举、边界、重复表 ID、绝对/越界源路径、源文件存在性。
 - 表维度名互异、顺序列表非空且唯一。
 - 所有单元格引用在已声明表与顺序内。
+- `shared_cells` 的关系名唯一、成员跨至少两张表，且不存在未知表/未知坐标、重复别名或跨关系冲突映射。
 
 **加载 CSV / 分类时**
 
@@ -154,6 +205,13 @@ tables:
 | `E_TABLE_DUPLICATE` / `E_TABLE_UNKNOWN` | 表 ID 重复/查询未知表 |
 | `E_SOURCE_PATH` / `E_SOURCE_MISSING` | 源路径越界或不存在 |
 | `E_CONTRACT_REFERENCE` / `E_CELL_REFERENCE` | 引用未知表/未知坐标 |
+| `E_SHARED_REFERENCE` / `E_SHARED_COORDINATE` | 共享关系引用未知表/未知坐标 |
+| `E_SHARED_GROUP_DUPLICATE` / `E_SHARED_CELL_DUPLICATE` | 关系名或别名重复 |
+| `E_SHARED_CONFLICT` / `E_SHARED_GROUP_SIZE` | 冲突映射或关系成员不足/未跨表 |
+| `E_JOINT_SUPPRESSION_RATIO_EXCEEDED` | 跨表传播使某成员表超过自身抑制率上限（阻断） |
+| `E_JOINT_GROUP_BLOCKED` | 关联组内任一表阻断，整组阻断（阻断） |
+| `E_JOINT_ALIAS_EXPOSURE` | 公开的结构零与被抑制单元格是同一业务值（阻断） |
+| `E_JOINT_SUPPRESSION_MAX_ROUNDS` | 跨表传播/补抑制闭包未在轮次上限内稳定（阻断） |
 | `E_CSV_*` | CSV 读取、表头、值、重复或缺失单元格错误 |
 | `E_STRUCTURAL_ZERO_VALUE` | 声明的结构零不是 0 |
 

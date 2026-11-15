@@ -36,6 +36,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| 主抑制 / 互补抑制 | {summary['primary_count']} / {summary['secondary_count']} |",
         f"| 抑制比例 | {_pct(summary['suppression_ratio'])} |",
         f"| 边际/反推核验 | {'通过' if summary['verify_passed'] else '失败'} |",
+        f"| 跨表联合核验 | {'通过' if summary['joint_verify_passed'] else '失败'} |",
+        f"| 共享关系数 / 阻断关系数 | {summary['shared_group_count']} / {summary['shared_group_blocked_count']} |",
+        f"| 联合策略 | `{summary['strategy']}` |",
         f"| 阻断表数量 | {summary['blocked_table_count']} |",
         "",
         "风险类别计数（blocked 以表为单位，其余以源单元格为单位）：",
@@ -51,6 +54,67 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "## 输入文件", "", "| 表 | 文件 | SHA-256 |", "| --- | --- | --- |"])
     for item in report["inputs"]:
         lines.append(f"| {_text(item['table_id'])} | {_text(item['source'])} | `{item['sha256']}` |")
+
+    if report.get("shared_relations"):
+        lines.extend(
+            [
+                "",
+                "## 跨表共享关系与联合审查",
+                "",
+                f"- 联合策略：`{report.get('strategy', 'local_then_propagation_closure')}`",
+                "- 只有契约显式声明的关联表才做联合审查；未关联表沿用各自局部结果。",
+                "",
+                "### 共享关系",
+                "",
+                "| 关系 | 成员表 | 状态 |",
+                "| --- | --- | --- |",
+            ]
+        )
+        for group in report["shared_relations"]:
+            lines.append(
+                f"| `{_text(group['name'])}` | {', '.join(group['table_ids'])} | "
+                f"{group['status']} |"
+            )
+        if report.get("trigger_chain"):
+            lines.extend(
+                [
+                    "",
+                    "### 跨表触发链",
+                    "",
+                    "| 轮次 | 动作 | 表 | 单元格 | 来源 | 关系 | 说明 |",
+                    "| ---: | --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            for event in report["trigger_chain"]:
+                source = event.get("source")
+                source_text = (
+                    f"{source['table_id']}:{source['row']}/{source['col']} "
+                    f"({source['suppression_type']})"
+                    if source
+                    else "—"
+                )
+                lines.append(
+                    f"| {event['round']} | {event['kind']} | {_text(event['table_id'])} | "
+                    f"{_text(event['row'])}/{_text(event['col'])} | {_text(source_text)} | "
+                    f"{_text(event.get('group', '—'))} | {_text(event.get('detail', ''))} |"
+                )
+        joint = report.get("joint_verification", {})
+        if joint.get("checks"):
+            lines.extend(
+                [
+                    "",
+                    "### 联合核验",
+                    "",
+                    "| 检查 | 结果 | 证据摘要 |",
+                    "| --- | --- | --- |",
+                ]
+            )
+            for check in joint["checks"]:
+                lines.append(
+                    f"| {_text(check['name'])} | "
+                    f"{'通过' if check['result'] == 'pass' else '失败'} | "
+                    f"{_text(check['detail'])} |"
+                )
 
     for table in report["tables"]:
         info = table["info_loss"]
@@ -87,13 +151,14 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"| {_text(check['name'])} | {'通过' if check['result'] == 'pass' else '失败'} | "
                 f"{_text(check['detail'])} |"
             )
-        lines.extend(["", "### 被抑制单元格", "", "| 行 | 列 | 类型 | 风险类别 | 指纹 |", "| --- | --- | --- | --- | --- |"])
+        lines.extend(["", "### 被抑制单元格", "", "| 行 | 列 | 类型 | 来源 | 风险类别 | 指纹 |", "| --- | --- | --- | --- | --- | --- |"])
         for cell in table["suppressed_cells"]:
             lines.append(
                 f"| {_text(cell['row'])} | {_text(cell['col'])} | {cell['suppression_type']} | "
+                f"{'跨表传播' if cell.get('propagated') else '本表'} | "
                 f"{cell['risk_category']} | `{cell['fingerprint'][:16]}…` |"
             )
         if not table["suppressed_cells"]:
-            lines.append("| — | — | — | — | 无 |")
+            lines.append("| — | — | — | — | — | 无 |")
     lines.extend(["", "## 说明", "", "本报告由确定性工程规则生成，不承诺形式化最优抑制或满足全部统计披露控制标准。", ""])
     return "\n".join(lines)

@@ -61,8 +61,11 @@
     <div class="card"><strong>{{ report.summary.primary_count }} / {{ report.summary.secondary_count }}</strong><span>主抑制 / 互补抑制</span></div>
     <div class="card"><strong>{{ "%.2f%%"|format(report.summary.suppression_ratio * 100) }}</strong><span>整体抑制比例</span></div>
     <div class="card"><strong>{{ "通过" if report.summary.verify_passed else "失败" }}</strong><span>边际与反推核验</span></div>
+    <div class="card"><strong>{{ "通过" if report.summary.joint_verify_passed else "失败" }}</strong><span>跨表联合核验</span></div>
+    <div class="card"><strong>{{ report.summary.shared_group_count }} / {{ report.summary.shared_group_blocked_count }}</strong><span>共享关系 / 阻断关系</span></div>
     <div class="card"><strong>{{ report.summary.blocked_table_count }}</strong><span>阻断表数量</span></div>
   </div>
+  <p class="muted">联合策略：<code>{{ report.summary.strategy }}</code>。只有契约显式声明的共享关系参与联合审查，未关联表保持各自局部结果。</p>
 
   <h3>风险类别统计</h3>
   <p class="muted">blocked 以表为单位计数；safe、small_count、sampling_zero、forced 以源单元格为单位计数。</p>
@@ -91,6 +94,57 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {% if report.shared_relations %}
+  <h2>跨表共享关系与联合审查</h2>
+  <p class="muted">只有契约显式声明的关联表才做联合审查；未关联表沿用各自局部结果。</p>
+  <table>
+    <thead><tr><th>关系</th><th>成员表</th><th>状态</th></tr></thead>
+    <tbody>
+      {% for group in report.shared_relations %}
+      <tr>
+        <td><code>{{ group.name }}</code></td>
+        <td>{{ group.table_ids|join(", ") }}</td>
+        <td><span class="pill {{ 'fail' if group.status == 'blocked' else 'pass' }}">{{ group.status }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if report.trigger_chain %}
+  <h3>跨表触发链</h3>
+  <table>
+    <thead><tr><th>轮次</th><th>动作</th><th>表</th><th>单元格</th><th>来源</th><th>关系</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for event in report.trigger_chain %}
+      <tr>
+        <td>{{ event.round }}</td>
+        <td><code>{{ event.kind }}</code></td>
+        <td>{{ event.table_id }}</td>
+        <td>{{ event.row }} / {{ event.col }}</td>
+        <td>{% if event.source %}{{ event.source.table_id }}:{{ event.source.row }}/{{ event.source.col }} ({{ event.source.suppression_type }}){% else %}—{% endif %}</td>
+        <td>{{ event.group or "—" }}</td>
+        <td>{{ event.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if report.joint_verification.checks %}
+  <h3>联合核验</h3>
+  <table>
+    <thead><tr><th>检查</th><th>结果</th><th>证据摘要</th></tr></thead>
+    <tbody>
+      {% for check in report.joint_verification.checks %}
+      <tr>
+        <td><code>{{ check.name }}</code></td>
+        <td><span class="pill {{ 'pass' if check.result == 'pass' else 'fail' }}">{{ check.result }}</span></td>
+        <td>{{ check.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
 
   {% for table in report.tables %}
   <h2>表 <code>{{ table.table_id }}</code></h2>
@@ -127,16 +181,18 @@
 
   <h3>被抑制单元格（不含原始计数）</h3>
   <table>
-    <thead><tr><th>行键</th><th>列键</th><th>类型</th><th>风险类别</th><th>指纹</th></tr></thead>
+    <thead><tr><th>行键</th><th>列键</th><th>类型</th><th>来源</th><th>风险类别</th><th>指纹</th></tr></thead>
     <tbody>
       {% for cell in table.suppressed_cells %}
       <tr>
         <td>{{ cell.row }}</td><td>{{ cell.col }}</td>
-        <td>{{ cell.suppression_type }}</td><td>{{ cell.risk_category }}</td>
+        <td>{{ cell.suppression_type }}</td>
+        <td>{{ "跨表传播" if cell.propagated else "本表" }}</td>
+        <td>{{ cell.risk_category }}</td>
         <td class="fingerprint">{{ cell.fingerprint }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="muted">无被抑制单元格。</td></tr>
+      <tr><td colspan="6" class="muted">无被抑制单元格。</td></tr>
       {% endfor %}
     </tbody>
   </table>

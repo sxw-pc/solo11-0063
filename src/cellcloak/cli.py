@@ -52,6 +52,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             f"({summary['suppression_ratio']:.2%})"
         )
         print(f"output: {outcome.output_dir}")
+        if summary["shared_group_count"]:
+            print(
+                f"shared relations: {summary['shared_group_count']} "
+                f"(blocked: {summary['shared_group_blocked_count']}) "
+                f"strategy={summary['strategy']}"
+            )
         for reason in summary["block_reasons"]:
             print(f"blocked: {reason['code']} ({reason['table_id']}) {reason['detail']}")
     if outcome.status == "blocked":

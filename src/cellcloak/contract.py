@@ -15,6 +15,7 @@ from .config import DEFAULT_MAX_ROUNDS, MAX_ROUNDS_CEILING
 from .errors import ContractError
 
 TABLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+SHARED_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 ZERO_POLICIES = {"structural", "protect_sampling"}
 MISSING_POLICIES = {"error", "zero"}
 
@@ -24,6 +25,21 @@ class CellRef:
     table_id: str
     row: str
     col: str
+
+
+@dataclass(frozen=True)
+class SharedGroup:
+    """An explicitly declared cross-table aliasing of one business cell."""
+
+    name: str
+    cells: tuple[CellRef, ...]
+
+    @property
+    def table_ids(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(cell.table_id for cell in self.cells))
+
+    def has(self, table_id: str, row: str, col: str) -> bool:
+        return CellRef(table_id, row, col) in self.cells
 
 
 @dataclass(frozen=True)
@@ -59,12 +75,22 @@ class Contract:
     privacy: PrivacyPolicy
     tables: tuple[TableSpec, ...]
     contract_hash: str
+    shared_cells: tuple[SharedGroup, ...] = ()
 
     def table(self, table_id: str) -> TableSpec:
         for spec in self.tables:
             if spec.table_id == table_id:
                 return spec
         raise ContractError("E_TABLE_UNKNOWN", "table is not declared", table_id=table_id)
+
+    def shared_groups_for(self, table_id: str) -> tuple[SharedGroup, ...]:
+        return tuple(group for group in self.shared_cells if table_id in group.table_ids)
+
+    def group_of(self, table_id: str, row: str, col: str) -> SharedGroup | None:
+        for group in self.shared_cells:
+            if group.has(table_id, row, col):
+                return group
+        return None
 
 
 def _err(code: str, message: str, **kwargs: Any) -> ContractError:
@@ -250,6 +276,118 @@ def _parse_privacy(raw: Any, tables: Mapping[str, TableSpec]) -> PrivacyPolicy:
     )
 
 
+def _parse_shared_cells(raw: Any, tables: Mapping[str, TableSpec]) -> tuple[SharedGroup, ...]:
+    """Parse the explicit cross-table shared-cell declarations.
+
+    Only declared relations are joint-reviewed. A declaration that references
+    an unknown table, an unknown coordinate, repeats an alias, or maps one
+    cell into two conflicting groups is rejected here rather than at runtime.
+    """
+
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise _err("E_CONTRACT_SCHEMA", "must be a list", field="shared_cells")
+    groups: list[SharedGroup] = []
+    seen_names: set[str] = set()
+    by_coordinate: dict[CellRef, SharedGroup] = {}
+    for index, item in enumerate(raw):
+        field = f"shared_cells[{index}]"
+        entry = _mapping(item, field)
+        name = _string(entry.get("name"), f"{field}.name")
+        if not SHARED_ID_RE.fullmatch(name):
+            raise _err(
+                "E_CONTRACT_SCHEMA",
+                "name must match [A-Za-z0-9][A-Za-z0-9_-]*",
+                field=f"{field}.name",
+                shared_name=name,
+            )
+        if name in seen_names:
+            raise _err(
+                "E_SHARED_GROUP_DUPLICATE",
+                "shared relation name is duplicated",
+                field=f"{field}.name",
+                shared_name=name,
+            )
+        seen_names.add(name)
+        raw_cells = entry.get("cells")
+        if not isinstance(raw_cells, list):
+            raise _err("E_CONTRACT_SCHEMA", "must be a list", field=f"{field}.cells")
+        if len(raw_cells) < 2:
+            raise _err(
+                "E_SHARED_GROUP_SIZE",
+                "a shared relation must declare at least two cells",
+                field=f"{field}.cells",
+                shared_name=name,
+            )
+        cells: list[CellRef] = []
+        for cell_index, raw_cell in enumerate(raw_cells):
+            cell_field = f"{field}.cells[{cell_index}]"
+            cell_entry = _mapping(raw_cell, cell_field)
+            table_id = _string(cell_entry.get("table"), f"{cell_field}.table")
+            row = _string(cell_entry.get("row"), f"{cell_field}.row")
+            col = _string(cell_entry.get("col"), f"{cell_field}.col")
+            spec = tables.get(table_id)
+            if spec is None:
+                raise _err(
+                    "E_SHARED_REFERENCE",
+                    "shared cell references an unknown table",
+                    table_id=table_id,
+                    field=field,
+                    shared_name=name,
+                )
+            if row not in spec.row_order or col not in spec.col_order:
+                raise _err(
+                    "E_SHARED_COORDINATE",
+                    "shared cell is outside row_order/col_order",
+                    table_id=table_id,
+                    cell=(row, col),
+                    field=field,
+                    shared_name=name,
+                )
+            ref = CellRef(table_id, row, col)
+            if ref in cells:
+                raise _err(
+                    "E_SHARED_CELL_DUPLICATE",
+                    "shared relation repeats the same cell",
+                    table_id=table_id,
+                    cell=(row, col),
+                    field=field,
+                    shared_name=name,
+                )
+            if len({ref.table_id for ref in cells}) and table_id in {r.table_id for r in cells}:
+                raise _err(
+                    "E_SHARED_TABLE_DUPLICATE",
+                    "shared relation lists a table more than once",
+                    table_id=table_id,
+                    field=field,
+                    shared_name=name,
+                )
+            other = by_coordinate.get(ref)
+            if other is not None and other.name != name:
+                raise _err(
+                    "E_SHARED_CONFLICT",
+                    f"cell is already mapped by shared relation {other.name!r}",
+                    table_id=table_id,
+                    cell=(row, col),
+                    field=field,
+                    shared_name=name,
+                )
+            cells.append(ref)
+        if len({ref.table_id for ref in cells}) < 2:
+            raise _err(
+                "E_SHARED_GROUP_SIZE",
+                "a shared relation must span at least two distinct tables",
+                field=f"{field}.cells",
+                shared_name=name,
+            )
+        group = SharedGroup(name=name, cells=tuple(cells))
+        for ref in group.cells:
+            by_coordinate[ref] = group
+        groups.append(group)
+    return tuple(groups)
+
+
 def load_contract(contract_path: str | Path) -> Contract:
     path = Path(contract_path).expanduser().resolve()
     if not path.is_file():
@@ -280,6 +418,9 @@ def load_contract(contract_path: str | Path) -> Contract:
     privacy = _parse_privacy(root.get("privacy"), {table.table_id: table for table in tables})
     if "privacy" not in root:
         raise _err("E_CONTRACT_SCHEMA", "privacy section is required", field="privacy")
+    shared_cells = _parse_shared_cells(
+        root.get("shared_cells"), {table.table_id: table for table in tables}
+    )
     return Contract(
         path=path,
         base_dir=base_dir,
@@ -288,4 +429,5 @@ def load_contract(contract_path: str | Path) -> Contract:
         privacy=privacy,
         tables=tables,
         contract_hash=hashlib.sha256(raw_bytes).hexdigest(),
+        shared_cells=shared_cells,
     )

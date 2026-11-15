@@ -17,6 +17,7 @@ class CellcloakError(Exception):
         table_id: str | None = None,
         field: str | None = None,
         cell: tuple[str, str] | None = None,
+        shared_name: str | None = None,
     ) -> None:
         self.code = code
         self.message = message
@@ -24,12 +25,15 @@ class CellcloakError(Exception):
         self.table_id = table_id
         self.field = field
         self.cell = cell
+        self.shared_name = shared_name
         super().__init__(self.render())
 
     def render(self) -> str:
         locators: list[str] = []
         if self.table_id:
             locators.append(f"table={self.table_id}")
+        if self.shared_name:
+            locators.append(f"shared={self.shared_name}")
         if self.field:
             locators.append(f"field={self.field}")
         if self.cell:

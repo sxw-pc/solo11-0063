@@ -1,0 +1,65 @@
+version: 1
+dataset_name: synthetic_shared_2026
+privacy:
+  min_count: 5
+  zero_policy: structural
+  max_suppression_ratio: 0.6
+  max_suppression_rounds: 100
+tables:
+- id: sex_by_region
+  source: sex_by_region.csv
+  row_dim: region
+  col_dim: age_band
+  value: count
+  row_order:
+  - R1
+  - R2
+  - R3
+  - R4
+  col_order:
+  - C1
+  - C2
+  - C3
+  - C4
+  missing_cell_policy: error
+- id: sex_by_district
+  source: sex_by_district.csv
+  row_dim: district
+  col_dim: age_band
+  value: count
+  row_order:
+  - R1
+  - R2
+  - R3
+  - R4
+  col_order:
+  - C1
+  - C2
+  - C3
+  - C4
+  missing_cell_policy: error
+shared_cells:
+- name: under18_region_alias
+  cells:
+  - table: sex_by_region
+    row: R1
+    col: C1
+  - table: sex_by_district
+    row: R3
+    col: C3
+- name: age_band_alias
+  cells:
+  - table: sex_by_region
+    row: R2
+    col: C2
+  - table: sex_by_district
+    row: R1
+    col: C1
+- name: district_alias
+  cells:
+  - table: sex_by_region
+    row: R3
+    col: C2
+  - table: sex_by_district
+    row: R2
+    col: C2

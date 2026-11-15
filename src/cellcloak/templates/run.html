@@ -36,6 +36,15 @@
 </section>
 {% endif %}
 
+{% if run.summary.shared_group_count %}
+<section class="alert">
+  <h2>跨表联合审查</h2>
+  <p>共享关系 {{ run.summary.shared_group_count }} 个，阻断关系 {{ run.summary.shared_group_blocked_count }} 个；
+     联合策略 <code>{{ run.summary.strategy }}</code>。
+     联合核验：{{ "通过" if run.summary.joint_verify_passed else "失败" }}。</p>
+</section>
+{% endif %}
+
 <section class="section-head">
   <div><p class="eyebrow">RISK CLASSES</p><h2>风险分布</h2></div>
   <span class="muted">blocked 以表计；其余类别以源单元格计</span>

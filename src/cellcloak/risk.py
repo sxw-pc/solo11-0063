@@ -41,6 +41,7 @@ class RiskAssessment:
     findings: tuple[RiskFinding, ...]
     counts: Mapping[str, int]
     primary_coords: frozenset[tuple[str, str]]
+    public_zero_coords: frozenset[tuple[str, str]] = frozenset()
 
     def finding(self, row: str, col: str) -> RiskFinding:
         for finding in self.findings:
@@ -86,6 +87,7 @@ def classify(
     counts = {label: 0 for label in RISK_LABELS}
     findings: list[RiskFinding] = []
     primary: set[tuple[str, str]] = set()
+    public_zero: set[tuple[str, str]] = set()
 
     for cell in model.cells():
         coordinate = (cell.row, cell.col)
@@ -95,6 +97,7 @@ def classify(
         elif cell.count == 0 and privacy.zero_policy == "structural" and coordinate in structural:
             category = RISK_SAFE
             reason = "declared structural zero"
+            public_zero.add(coordinate)
         elif cell.count == 0:
             category = RISK_SAMPLING_ZERO
             reason = "zero count treated as sampling zero"
@@ -123,4 +126,5 @@ def classify(
         findings=tuple(findings),
         counts=counts,
         primary_coords=frozenset(primary),
+        public_zero_coords=frozenset(public_zero),
     )

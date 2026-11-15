@@ -58,6 +58,7 @@ class SuppressionReason:
     risk_category: str
     detail: str
     round_no: int = 0
+    propagated: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in (SUPPRESSION_PRIMARY, SUPPRESSION_SECONDARY):
