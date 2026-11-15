@@ -119,13 +119,23 @@ TableSpec ── ingest.load_table ──► TableModel（完整矩阵、边际�
 
 | 表 | 用途 |
 | --- | --- |
-| `runs` | 运行 ID、数据集、状态、开始/结束、契约哈希、输出目录、汇总 JSON |
+| `runs` | 运行 ID、数据集、状态、开始/结束、契约哈希、输出目录、汇总 JSON、封存标记与封存期望 |
 | `tables` | 表维度、主/补抑制数、比例、状态、阻断原因、元数据 |
 | `cells` | 每个单元格的原始计数、抑制类型、风险类别、指纹；**仅内部** |
 | `checks` | 每项核验结果与证据摘要 |
 | `artifacts` | 产物路径、类型、SHA-256 |
+| `run_chunks` | 分块入账的块序号、坐标数与链式摘要；随 run 级联删除 |
 
-台账连接在每次操作中创建并提交，启用外键；所有写操作使用 SQLite 事务。`runs` 不覆盖历史记录。`diff` 比较抑制比例、主/补抑制、阻断状态、表状态与公开 CSV 哈希。
+台账连接在每次操作中创建并提交，启用外键与 WAL。单元格按**有界分块**写入：
+`begin_run` 先提交 run 外壳（`sealed = 0`）与 tables/checks/artifacts，cells 以
+每块一个短事务流式落盘（峰值行缓冲固定为一块，不随总格数增长），最后
+`seal_run` 在单个事务内核验累计数量、链式坐标摘要与子表关联后才把 run 翻转
+为 `sealed = 1`。`list_runs`、`get_run_detail`、`load_for_verification` 只读已封存
+run，录制中的部分矩阵对外不可见。崩溃留下的未封存记录通过
+`cellcloak ledger pending / resume / abort` 检查、续传或清理；协议细节、失败
+模式矩阵与两条实现路径的测量对比见 `docs/LEDGER_CHUNKING.md`。
+
+`runs` 不覆盖历史记录。`diff` 比较抑制比例、主/补抑制、阻断状态、表状态与公开 CSV 哈希。
 
 ## Web
 

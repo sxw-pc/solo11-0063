@@ -111,10 +111,15 @@ python -m cellcloak run --contract <path> --out <dir> [--db <sqlite>] [--json]
 python -m cellcloak runs [--limit 20] [--db <sqlite>] [--json]
 python -m cellcloak verify --run <run-id> [--db <sqlite>] [--json]
 python -m cellcloak diff --run-a <run-id> --run-b <run-id> [--db <sqlite>] [--json]
+python -m cellcloak ledger pending [--db <sqlite>] [--json]
+python -m cellcloak ledger resume --run <run-id> [--db <sqlite>] [--json]
+python -m cellcloak ledger abort --run <run-id> [--db <sqlite>] [--json]
 python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 ```
 
 `verify` 会从 SQLite 重建单元格矩阵并重新执行独立核验，把结果以 `source = reverify` 追加到 `checks`。失败时写入 `verify_failed`；原本已 `blocked` 的运行保留 `blocked` 状态，但命令仍返回非零。
+
+台账按有界分块入账并在全部核验通过后封存；`runs`/`verify`/`diff` 与 Web 页面只显示已封存的运行。若进程在入账中途崩溃，`ledger pending` 会列出未封存的录制及其进度，`ledger resume` 按原契约确定性续传并封存，`ledger abort` 删除未封存录制及其全部暂存单元格。协议细节见 `docs/LEDGER_CHUNKING.md`。
 
 ## 退出码
 
@@ -145,6 +150,10 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 | `E_SUPPRESSION_MAX_ROUNDS` | 互补抑制未在轮次上限内稳定 |
 | `E_OUTPUT_NOT_EMPTY` / `E_OUTPUT_MARKER` | 输出目录保护或清单异常 |
 | `E_RUN_NOT_FOUND` / `E_RUN_DUPLICATE` | 台账运行不存在/重复 |
+| `E_RUN_SEALED` | 对已封存运行执行写入/恢复/中止 |
+| `E_LEDGER_CHUNK_SEQ` / `E_LEDGER_CHUNK_CONFLICT` | 入账块乱序，或同序号块内容冲突 |
+| `E_LEDGER_SEAL` | 封存核验失败（数量、链式摘要或子表关联不符） |
+| `E_LEDGER_RESUME` | 续传时重放结果与未封存录制不一致 |
 | `E_LOOPBACK_ONLY` | 拒绝绑定非回环地址 |
 
 阻断原因与异常错误码分开使用：阻断不是程序失败，而是发布判定。

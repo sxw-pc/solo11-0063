@@ -19,7 +19,7 @@ from .config import (
 from .diffing import compare_runs
 from .errors import CellcloakError
 from .ledger import Ledger
-from .pipeline import execute_run, reverify_run
+from .pipeline import execute_run, resume_run, reverify_run
 
 
 def _ledger(args: argparse.Namespace) -> Ledger:
@@ -123,6 +123,55 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ledger_pending(args: argparse.Namespace) -> int:
+    pending = _ledger(args).pending_runs()
+    if args.json:
+        _print_json(pending)
+        return 0
+    if not pending:
+        print("no interrupted recordings")
+        return 0
+    print("RUN ID                                      CELLS              CHUNKS   DATASET")
+    for item in pending:
+        progress = f"{item['cells_committed']}/{item['expected_cells']}"
+        chunks = f"{item['chunks_committed']}/{item['expected_chunks']}"
+        print(f"{item['run_id']:<43} {progress:>18} {chunks:>9}  {item['dataset_name']}")
+    print("\nrecover with: cellcloak ledger resume --run <id> | cellcloak ledger abort --run <id>")
+    return 0
+
+
+def _cmd_ledger_resume(args: argparse.Namespace) -> int:
+    outcome = resume_run(_ledger(args), args.run)
+    if args.json:
+        _print_json(
+            {
+                "run_id": outcome.run_id,
+                "status": outcome.status,
+                "output_dir": str(outcome.output_dir),
+                "summary": outcome.report.get("summary", {}),
+            }
+        )
+    else:
+        print(f"run_id: {outcome.run_id}")
+        print(f"status: {outcome.status}")
+        print("recording resumed and sealed")
+    if outcome.status == "blocked":
+        return 3
+    if outcome.status == "verify_failed":
+        return 4
+    return 0
+
+
+def _cmd_ledger_abort(args: argparse.Namespace) -> int:
+    ledger = _ledger(args)
+    ledger.abort_run(args.run)
+    if args.json:
+        _print_json({"run_id": args.run, "aborted": True})
+    else:
+        print(f"aborted recording: {args.run}")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         host = require_loopback(args.host)
@@ -171,6 +220,26 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--db")
     diff.add_argument("--json", action="store_true")
     diff.set_defaults(func=_cmd_diff)
+
+    ledger_cmd = sub.add_parser("ledger", help="inspect and recover interrupted recordings")
+    ledger_sub = ledger_cmd.add_subparsers(dest="ledger_command", required=True)
+
+    pending = ledger_sub.add_parser("pending", help="list interrupted (unsealed) recordings")
+    pending.add_argument("--db")
+    pending.add_argument("--json", action="store_true")
+    pending.set_defaults(func=_cmd_ledger_pending)
+
+    resume = ledger_sub.add_parser("resume", help="resume and seal an interrupted recording")
+    resume.add_argument("--run", required=True)
+    resume.add_argument("--db")
+    resume.add_argument("--json", action="store_true")
+    resume.set_defaults(func=_cmd_ledger_resume)
+
+    abort = ledger_sub.add_parser("abort", help="delete an interrupted recording and its staged cells")
+    abort.add_argument("--run", required=True)
+    abort.add_argument("--db")
+    abort.add_argument("--json", action="store_true")
+    abort.set_defaults(func=_cmd_ledger_abort)
 
     serve = sub.add_parser("serve", help="start the loopback-only local web UI")
     serve.add_argument("--host", default=DEFAULT_HOST)
