@@ -1,0 +1,14 @@
+version: 1
+kind: cellcloak-input-manifest
+dataset_name: synthetic_demo_2026
+contract_hash: bc0494428b18f550489c02760653362dd188543fc4862b97e7bd60b6ffa10afd
+members:
+- table_id: age_by_sex
+  source: age_by_sex.csv
+  sha256: 2c2920d0d307b8de0c19138dcd95e78c4ffa484d34ae67b346136294fcb63c1a
+  size: 140
+- table_id: region_by_age
+  source: region_by_age.csv
+  sha256: e1722a6eac46c1e1d09e0391b25287638b2bddf90cecc51a59bbb63c12e11269
+  size: 215
+manifest_sha256: b57ee95b36f1ac0aefa171359eaac11e81e2435faf19d9336c6d353175dc552b

@@ -108,11 +108,42 @@ out/demo/
 
 ```text
 python -m cellcloak run --contract <path> --out <dir> [--db <sqlite>] [--json]
+python -m cellcloak run --contract <path> --out <dir> --manifest <path> [--input-mode snapshot|bytes] [--snapshot-dir <dir>]
+python -m cellcloak manifest --contract <path> --out <manifest.yml> [--json]
 python -m cellcloak runs [--limit 20] [--db <sqlite>] [--json]
 python -m cellcloak verify --run <run-id> [--db <sqlite>] [--json]
 python -m cellcloak diff --run-a <run-id> --run-b <run-id> [--db <sqlite>] [--json]
 python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 ```
+
+## 固定输入集（可选 manifest）
+
+多表审查默认逐表读取 `contract.tables` 顺序的 CSV。为了让“这次联合抑制使用的是同一时点捕获的一组输入”可证明，可先生成 manifest，再用它运行：
+
+```bash
+python -m cellcloak manifest --contract fixtures/demo/contract.yml --out out/input-manifest.yml
+python -m cellcloak run --contract fixtures/demo/contract.yml --out out/demo \
+  --manifest out/input-manifest.yml
+```
+
+manifest 是一个独立的 YAML 文件，绑定：
+
+- 契约的**规范化 hash**（只取有效语义：隐私策略、表声明、顺序、权重，不含 YAML 排版/注释/文件位置）；
+- 按契约顺序排列的成员列表：`table_id`、相对 `source` 路径、原始 SHA-256、字节数；
+- 上述内容的 `manifest_sha256` 自校验签名。
+
+`run --manifest` 会先校验签名、契约绑定和成员序列（缺失、重复、重排、越界路径、额外成员均拒绝），随后只从**已验证的字节**构造所有 `TableModel`，不会“先 hash 路径、再重新打开解析”。manifest hash 与每个成员的源哈希写入 `audit/report.*` 与 SQLite 台账。任一 CSV 或契约变化、成员不一致、snapshot 不可用时，运行在写 `public/` 和成功台账记录之前失败，并报出具体不匹配的表/源。
+
+两种捕获方式：
+
+| `--input-mode` | 行为 | 取舍 |
+| --- | --- | --- |
+| `snapshot`（默认） | 逐表复制到受控临时目录并同时计算 SHA-256，全体来源前后各复核一次，随后只解析快照；退出时清理临时文件 | 峰值 RAM 小；需要额外 I/O、临时目录权限与清理 |
+| `bytes` | 每表读入内存一次并计算 SHA-256，全体来源前后各复核一次，随后解析保留的 bytes | 无临时文件；峰值内存随全部 CSV 总量增长 |
+
+普通文件系统无法对多个独立文件做原子快照。若并发替换改变了字节，前/后哈希复核会发现并拒绝；但“替换后又回滚”的 ABA 场景无法仅凭文件系统证明其未发生。manifest 记录的是**实际观测到的内容身份**，不是文件系统事务保证。
+
+不传 `--manifest` 时保持旧行为：逐表读取实时源文件，运行记录标为“未固定输入集”（`input_set.pinned = false`）。旧版台账无需迁移即可读取，历史运行显示为 legacy 输入集。
 
 `verify` 会从 SQLite 重建单元格矩阵并重新执行独立核验，把结果以 `source = reverify` 追加到 `checks`。失败时写入 `verify_failed`；原本已 `blocked` 的运行保留 `blocked` 状态，但命令仍返回非零。
 
@@ -134,6 +165,14 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 | `E_CONTRACT_SCHEMA` / `E_CONTRACT_YAML` | 契约结构或 YAML 非法 |
 | `E_TABLE_DUPLICATE` | 表 ID 重复 |
 | `E_SOURCE_PATH` / `E_SOURCE_MISSING` | CSV 路径越界或不存在 |
+| `E_MANIFEST_READ` / `E_MANIFEST_YAML` / `E_MANIFEST_SCHEMA` | manifest 不可读、YAML 非法或字段非法 |
+| `E_MANIFEST_INTEGRITY` | `manifest_sha256` 与内容不一致 |
+| `E_MANIFEST_CONTRACT_MISMATCH` | manifest 绑定的规范化契约 hash/数据集与当前契约不符 |
+| `E_MANIFEST_MEMBER_MISSING` / `E_MANIFEST_MEMBER_EXTRA` / `E_MANIFEST_MEMBER_DUPLICATE` / `E_MANIFEST_MEMBER_ORDER` / `E_MANIFEST_MEMBER_SOURCE` | 成员缺失、多余、重复、重排或路径不符 |
+| `E_MANIFEST_MEMBER_CHANGED` / `E_MANIFEST_SOURCE_CHANGED` | 源字节与 manifest 不符，或捕获期间来源发生变化 |
+| `E_MANIFEST_SOURCE_PATH` | manifest 中的源路径越界 |
+| `E_MANIFEST_SNAPSHOT` / `E_MANIFEST_SNAPSHOT_CORRUPT` | 临时快照不可创建/不可读/内容不符 |
+| `E_CSV_SOURCE_CHANGED` | 校验后的字节在解析前不再匹配摘要 |
 | `E_CELL_REFERENCE` | 强制抑制/结构零/权重引用了不存在的坐标 |
 | `E_CSV_HEADER` | 缺少必需列、重复表头或多余字段 |
 | `E_CSV_VALUE` | 计数为负、小数、空值或非整数 |
@@ -161,7 +200,8 @@ python -m cellcloak serve --host 127.0.0.1 --port 5017 [--db <sqlite>]
 
 ```text
 src/cellcloak/
-  contract.py   契约解析与静态校验
+  contract.py   契约解析、静态校验与规范化契约 hash
+  manifest.py   输入集 manifest：创建、签名校验、成员校验、bytes/snapshot 捕获
   ingest.py     CSV 读取、矩阵完整性、边际计算
   risk.py       主风险分类
   suppress.py   主抑制、互补抑制、阻断判定

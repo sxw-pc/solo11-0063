@@ -79,6 +79,8 @@ def build_report(
     started_at: str,
     finished_at: str,
     evaluations: list[EvaluatedTable],
+    *,
+    input_set: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tables: list[dict[str, Any]] = []
     risk_totals = {label: 0 for label in RISK_LABELS}
@@ -88,6 +90,11 @@ def build_report(
     total_secondary = 0
     blocked_tables: list[dict[str, str]] = []
     verify_passed = True
+    input_members = {
+        str(member.get("table_id")): member
+        for member in (input_set or {}).get("members", [])
+        if isinstance(member, dict)
+    }
 
     for evaluation in evaluations:
         model = evaluation.model
@@ -122,6 +129,8 @@ def build_report(
                 "table_id": model.table_id,
                 "source": model.source_name,
                 "source_sha256": model.source_sha256,
+                "source_size": model.source_size,
+                "input_member": input_members.get(model.table_id) if (input_set or {}).get("pinned") else None,
                 "row_dim": model.row_dim,
                 "col_dim": model.col_dim,
                 "row_count": model.row_count(),
@@ -173,13 +182,42 @@ def build_report(
         "dataset_name": contract.dataset_name,
         "contract_version": contract.version,
         "contract_hash": contract.contract_hash,
+        "normalized_contract_hash": contract.normalized_hash,
         "run_id": run_id,
         "status": status,
         "started_at": started_at,
         "finished_at": finished_at,
+        "input_set": input_set
+        or {
+            "pinned": False,
+            "mode": "legacy",
+            "manifest_hash": None,
+            "manifest_path": None,
+            "contract_hash": contract.normalized_hash,
+            "dataset_name": contract.dataset_name,
+            "members": [
+                {
+                    "table_id": evaluation.model.table_id,
+                    "source": evaluation.model.source_name,
+                    "sha256": evaluation.model.source_sha256,
+                    "size": evaluation.model.source_size,
+                    "parsed_sha256": evaluation.model.source_sha256,
+                    "parsed_size": evaluation.model.source_size,
+                    "matches": True,
+                }
+                for evaluation in evaluations
+            ],
+            "note": "unpinned input set: sources were read per table without a manifest",
+        },
         "inputs": [
-            {"table_id": evaluation.model.table_id, "source": evaluation.model.source_name,
-             "sha256": evaluation.model.source_sha256}
+            {
+                "table_id": evaluation.model.table_id,
+                "source": evaluation.model.source_name,
+                "sha256": evaluation.model.source_sha256,
+                "size": evaluation.model.source_size,
+                "manifest_sha256": input_members.get(evaluation.model.table_id, {}).get("sha256"),
+                "input_set_pinned": bool((input_set or {}).get("pinned")),
+            }
             for evaluation in evaluations
         ],
         "summary": summary,

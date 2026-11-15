@@ -17,6 +17,8 @@
   <div><span>结束</span>{{ run.finished_at }}</div>
   <div><span>契约版本</span>v{{ run.summary.contract_version if run.summary.contract_version is defined else "1" }}</div>
   <div><span>契约哈希</span><code>{{ run.contract_hash[:16] }}…</code></div>
+  <div><span>输入集</span>{{ "已固定" if run.input_set.pinned else "未固定" }} · {{ run.input_set.mode }}</div>
+  <div><span>manifest</span><code>{{ run.input_set.manifest_hash[:16] ~ "…" if run.input_set.manifest_hash else "—" }}</code></div>
 </div>
 
 <section class="metric-grid">

@@ -11,6 +11,7 @@ from .ledger import Ledger
 def _basic(detail: dict[str, Any]) -> dict[str, Any]:
     run = detail["run"]
     summary = run.get("summary", {})
+    input_set = run.get("input_set", {})
     return {
         "id": run["id"],
         "dataset_name": run["dataset_name"],
@@ -22,6 +23,9 @@ def _basic(detail: dict[str, Any]) -> dict[str, Any]:
         "secondary_count": summary.get("secondary_count", 0),
         "table_count": summary.get("table_count", 0),
         "blocked_reasons": summary.get("block_reasons", []),
+        "input_set_pinned": bool(input_set.get("pinned")),
+        "input_set_manifest_hash": input_set.get("manifest_hash"),
+        "input_set_mode": input_set.get("mode", "legacy"),
     }
 
 
@@ -101,6 +105,7 @@ def compare_runs(ledger: Ledger, run_a: str, run_b: str) -> dict[str, Any]:
             "primary_delta": basic_b["primary_count"] - basic_a["primary_count"],
             "secondary_delta": basic_b["secondary_count"] - basic_a["secondary_count"],
             "public_hash_changed": public_hash_changed,
+            "input_set_changed": basic_a["input_set_manifest_hash"] != basic_b["input_set_manifest_hash"],
             "changed": public_hash_changed
             or basic_a["status"] != basic_b["status"]
             or basic_a["suppression_ratio"] != basic_b["suppression_ratio"]

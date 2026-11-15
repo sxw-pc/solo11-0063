@@ -48,9 +48,28 @@ def render_markdown(report: dict[str, Any]) -> str:
         for reason in summary["block_reasons"]:
             lines.append(f"- `{reason['code']}` ({reason['table_id']}): {_text(reason['detail'])}")
 
-    lines.extend(["", "## 输入文件", "", "| 表 | 文件 | SHA-256 |", "| --- | --- | --- |"])
+    lines.extend(
+        [
+            "",
+            "## 输入集身份",
+            "",
+            f"- 是否固定：{'是' if report['input_set']['pinned'] else '否（未固定输入集）'}",
+            f"- 捕获方式：`{report['input_set']['mode']}`",
+            f"- manifest SHA-256：`{report['input_set']['manifest_hash'] or '—'}`",
+            f"- 规范化契约哈希：`{report['input_set']['contract_hash']}`",
+        ]
+    )
+    if report["input_set"].get("note"):
+        lines.append(f"- 说明：{report['input_set']['note']}")
+
+    lines.extend(["", "## 输入文件", "", "| 表 | 文件 | 字节数 | SHA-256 | manifest SHA-256 |", "| --- | --- | ---: | --- | --- |"])
     for item in report["inputs"]:
-        lines.append(f"| {_text(item['table_id'])} | {_text(item['source'])} | `{item['sha256']}` |")
+        size = item.get("size")
+        size_text = "—" if size is None else str(size)
+        lines.append(
+            f"| {_text(item['table_id'])} | {_text(item['source'])} | {size_text} | "
+            f"`{item['sha256']}` | `{item.get('manifest_sha256') or '—'}` |"
+        )
 
     for table in report["tables"]:
         info = table["info_loss"]

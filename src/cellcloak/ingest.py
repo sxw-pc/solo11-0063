@@ -19,16 +19,44 @@ def _err(code: str, message: str, **kwargs: object) -> IngestError:
     return IngestError(code, message, **kwargs)
 
 
-def _decode(path: Path) -> tuple[str, str]:
+def _decode_bytes(raw: bytes, *, source: str | Path | None = None) -> str:
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise _err("E_CSV_ENCODING", "CSV must be UTF-8 or UTF-8-SIG", path=source) from exc
+
+
+def _decode(path: Path) -> tuple[str, str, int]:
     try:
         raw = path.read_bytes()
     except OSError as exc:
         raise _err("E_CSV_READ", "cannot read CSV", path=path) from exc
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise _err("E_CSV_ENCODING", "CSV must be UTF-8 or UTF-8-SIG", path=path) from exc
-    return text, hashlib.sha256(raw).hexdigest()
+    return _decode_bytes(raw, source=path), hashlib.sha256(raw).hexdigest(), len(raw)
+
+
+def decode_verified(
+    raw: bytes,
+    *,
+    expected_sha256: str,
+    source: str | Path | None = None,
+    table_id: str | None = None,
+) -> tuple[str, str, int]:
+    """Decode exactly ``raw`` after confirming it matches the expected digest.
+
+    Returns ``(text, sha256, size)``. The digest is recomputed here so the
+    caller can prove that the bytes being parsed are the bytes the manifest
+    vouched for, rather than re-opening the source path.
+    """
+
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != expected_sha256:
+        raise _err(
+            "E_CSV_SOURCE_CHANGED",
+            "verified input bytes no longer match the expected SHA-256",
+            table_id=table_id,
+            path=source,
+        )
+    return _decode_bytes(raw, source=source), digest, len(raw)
 
 
 def _headers(reader: csv.DictReader[str], spec: TableSpec) -> None:
@@ -63,7 +91,52 @@ def _parse_count(value: str | None, spec: TableSpec, line_no: int, cell: tuple[s
 
 
 def load_table(spec: TableSpec) -> TableModel:
-    text, source_hash = _decode(spec.source_path)
+    """Read and parse a CSV directly from ``spec.source_path``.
+
+    This is the legacy path used when no input-set manifest is supplied. It
+    reads the file exactly once so the digest in the returned model and the
+    parsed bytes come from the same read.
+    """
+
+    text, digest, size = _decode(spec.source_path)
+    return load_table_bytes(spec, (text, digest), source_size=size)
+
+
+def load_table_from_bytes(
+    spec: TableSpec,
+    raw: bytes,
+    *,
+    expected_sha256: str,
+) -> TableModel:
+    """Parse a CSV from verified bytes without re-opening the source path.
+
+    ``expected_sha256`` must be the digest the input manifest recorded for this
+    member. The digest is recomputed on exactly ``raw`` before decoding, so the
+    model's ``source_sha256`` and its parsed cells always describe one read.
+    """
+
+    text, digest, size = decode_verified(
+        raw,
+        expected_sha256=expected_sha256,
+        source=spec.source,
+        table_id=spec.table_id,
+    )
+    return load_table_bytes(spec, (text, digest), source_size=size)
+
+
+def load_table_bytes(
+    spec: TableSpec,
+    decoded: tuple[str, str],
+    *,
+    source_size: int | None = None,
+) -> TableModel:
+    """Parse a CSV from already verified ``(text, sha256)`` bytes.
+
+    The caller is responsible for having hashed exactly the bytes that were
+    decoded. ``source_size`` is the byte length of those same bytes.
+    """
+
+    text, source_hash = decoded
     # Skip completely blank lines before the header; csv.DictReader skips
     # blank records inside the body but treats a leading blank line as data.
     while text and not text.splitlines()[0].strip():
@@ -119,4 +192,5 @@ def load_table(spec: TableSpec) -> TableModel:
         counts=counts,
         source_name=spec.source,
         source_sha256=source_hash,
+        source_size=source_size,
     )

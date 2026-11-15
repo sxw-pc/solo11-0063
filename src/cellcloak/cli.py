@@ -19,6 +19,7 @@ from .config import (
 from .diffing import compare_runs
 from .errors import CellcloakError
 from .ledger import Ledger
+from .manifest import DEFAULT_INPUT_MODE, INPUT_MODES, create_manifest
 from .pipeline import execute_run, reverify_run
 
 
@@ -31,19 +32,28 @@ def _print_json(value: object) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    outcome = execute_run(args.contract, args.out, _ledger(args))
+    outcome = execute_run(
+        args.contract,
+        args.out,
+        _ledger(args),
+        manifest_path=args.manifest,
+        input_mode=args.input_mode,
+        snapshot_dir=args.snapshot_dir,
+    )
     if args.json:
-        _print_json(
-            {
-                "run_id": outcome.run_id,
-                "status": outcome.status,
-                "output_dir": str(outcome.output_dir),
-                "summary": outcome.report["summary"],
-                "artifacts": [str(artifact.path) for artifact in outcome.artifacts],
-            }
-        )
+        payload = {
+            "run_id": outcome.run_id,
+            "status": outcome.status,
+            "output_dir": str(outcome.output_dir),
+            "summary": outcome.report["summary"],
+            "artifacts": [str(artifact.path) for artifact in outcome.artifacts],
+        }
+        if outcome.report.get("input_set", {}).get("pinned"):
+            payload["input_set"] = outcome.report["input_set"]
+        _print_json(payload)
     else:
         summary = outcome.report["summary"]
+        input_set = outcome.report.get("input_set", {})
         print(f"run_id: {outcome.run_id}")
         print(f"status: {outcome.status}")
         print(f"tables: {summary['table_count']}  cells: {summary['cell_count']}")
@@ -51,6 +61,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
             f"suppression: {summary['suppressed_cell_count']} cells "
             f"({summary['suppression_ratio']:.2%})"
         )
+        if input_set.get("pinned"):
+            print(
+                f"input set: pinned ({input_set.get('mode')}) "
+                f"manifest={input_set.get('manifest_hash')}"
+            )
         print(f"output: {outcome.output_dir}")
         for reason in summary["block_reasons"]:
             print(f"blocked: {reason['code']} ({reason['table_id']}) {reason['detail']}")
@@ -58,6 +73,30 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 3
     if outcome.status == "verify_failed":
         return 4
+    return 0
+
+
+def _cmd_manifest(args: argparse.Namespace) -> int:
+    from .contract import load_contract
+
+    contract = load_contract(args.contract)
+    manifest = create_manifest(contract, args.out)
+    if args.json:
+        _print_json(
+            {
+                "manifest": str(manifest.path),
+                "manifest_hash": manifest.manifest_hash,
+                "contract_hash": manifest.contract_hash,
+                "members": [member.as_record() for member in manifest.members],
+            }
+        )
+    else:
+        print(f"manifest: {manifest.path}")
+        print(f"manifest_sha256: {manifest.manifest_hash}")
+        print(f"contract_hash: {manifest.contract_hash}")
+        print(f"members: {len(manifest.members)}")
+        for member in manifest.members:
+            print(f"  {member.table_id}: {member.source} {member.sha256} ({member.size} bytes)")
     return 0
 
 
@@ -149,9 +188,23 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="execute the full suppression pipeline")
     run.add_argument("--contract", required=True)
     run.add_argument("--out", required=True)
+    run.add_argument("--manifest", help="verified input-set manifest for all tables")
+    run.add_argument(
+        "--input-mode",
+        choices=INPUT_MODES,
+        default=DEFAULT_INPUT_MODE,
+        help="manifest capture strategy: snapshot (temporary files, default) or bytes (in memory)",
+    )
+    run.add_argument("--snapshot-dir", help="parent directory for snapshot mode temporary files")
     run.add_argument("--db")
     run.add_argument("--json", action="store_true")
     run.set_defaults(func=_cmd_run)
+
+    manifest = sub.add_parser("manifest", help="create an input-set manifest from the current sources")
+    manifest.add_argument("--contract", required=True)
+    manifest.add_argument("--out", required=True)
+    manifest.add_argument("--json", action="store_true")
+    manifest.set_defaults(func=_cmd_manifest)
 
     verify = sub.add_parser("verify", help="re-verify a recorded run independently")
     verify.add_argument("--run", required=True)

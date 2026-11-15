@@ -51,6 +51,8 @@
       <div><span>开始时间</span>{{ report.started_at }}</div>
       <div><span>结束时间</span>{{ report.finished_at }}</div>
       <div><span>契约哈希</span><code class="fingerprint">{{ report.contract_hash }}</code></div>
+      <div><span>输入集</span>{{ "已固定" if report.input_set.pinned else "未固定" }} · {{ report.input_set.mode }}</div>
+      <div><span>输入集 manifest</span><code class="fingerprint">{{ report.input_set.manifest_hash or "—" }}</code></div>
     </div>
   </header>
 
@@ -83,11 +85,20 @@
   {% endif %}
 
   <h2>输入文件</h2>
+  {% if report.input_set.note %}
+  <p class="note">{{ report.input_set.note }}</p>
+  {% endif %}
   <table>
-    <thead><tr><th>表</th><th>文件</th><th>SHA-256</th></tr></thead>
+    <thead><tr><th>表</th><th>文件</th><th>字节数</th><th>SHA-256</th><th>manifest SHA-256</th></tr></thead>
     <tbody>
       {% for item in report.inputs %}
-      <tr><td><code>{{ item.table_id }}</code></td><td>{{ item.source }}</td><td class="fingerprint">{{ item.sha256 }}</td></tr>
+      <tr>
+        <td><code>{{ item.table_id }}</code></td>
+        <td>{{ item.source }}</td>
+        <td>{{ item.size if item.size is not none else "—" }}</td>
+        <td class="fingerprint">{{ item.sha256 }}</td>
+        <td class="fingerprint">{{ item.manifest_sha256 or "—" }}</td>
+      </tr>
       {% endfor %}
     </tbody>
   </table>

@@ -155,6 +155,27 @@ tables:
 | `E_SOURCE_PATH` / `E_SOURCE_MISSING` | 源路径越界或不存在 |
 | `E_CONTRACT_REFERENCE` / `E_CELL_REFERENCE` | 引用未知表/未知坐标 |
 | `E_CSV_*` | CSV 读取、表头、值、重复或缺失单元格错误 |
+| `E_CSV_SOURCE_CHANGED` | 已核验字节在解析前摘要不再匹配 |
 | `E_STRUCTURAL_ZERO_VALUE` | 声明的结构零不是 0 |
+| `E_MANIFEST_*` | 输入集 manifest 读取、签名、契约绑定、成员或快照错误（详见 README） |
 
 错误对象包含稳定的 `code`，并尽可能附带 `table_id`、`field`、`cell` 与文件定位信息。CLI 只打印稳定错误码与消息，不打印堆栈。
+
+## 输入集 manifest
+
+manifest 不是契约的一部分，而是对一次输入捕获的独立承诺。`cellcloak manifest --contract <path> --out <file>` 的输出结构：
+
+```yaml
+version: 1
+kind: cellcloak-input-manifest
+dataset_name: synthetic_demo_2026
+contract_hash: <规范化契约 SHA-256>
+members:
+  - table_id: age_by_sex
+    source: age_by_sex.csv
+    sha256: <原始 CSV 字节 SHA-256>
+    size: 140
+manifest_sha256: <上述内容的规范化 JSON SHA-256>
+```
+
+`contract_hash` 是规范化语义 hash，不是 YAML 文件 hash；仅调整格式、注释或键顺序不会改变它，而修改隐私策略、表顺序、维度、顺序列表、权重或相对 source 会改变它。`manifest_sha256` 对除自身之外的全部字段做规范化 JSON 摘要，读取时重算校验。成员必须与契约 `tables` 顺序一致，不允许缺失、重复、重排、额外表或越界/绝对 source 路径。

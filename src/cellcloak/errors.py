@@ -48,6 +48,10 @@ class IngestError(CellcloakError):
     """An aggregated CSV cannot be loaded safely."""
 
 
+class ManifestError(CellcloakError):
+    """An input-set manifest is invalid or no longer matches its sources."""
+
+
 class LedgerError(CellcloakError):
     """The local audit ledger cannot be read or written."""
 

@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS runs (
     contract_hash TEXT NOT NULL,
     contract_path TEXT NOT NULL,
     output_dir TEXT NOT NULL,
-    summary_json TEXT NOT NULL
+    summary_json TEXT NOT NULL,
+    input_set_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS tables (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -87,8 +88,21 @@ class Ledger:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             with self._connection() as conn:
                 conn.executescript(SCHEMA)
+                self._migrate(conn)
         except (OSError, sqlite3.Error) as exc:
             raise LedgerError("E_LEDGER_DB", "cannot initialise local SQLite ledger", path=self.db_path) from exc
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add newer nullable/defaulted columns to pre-existing ledgers.
+
+        Historical runs remain readable: their ``input_set_json`` stays empty
+        and is surfaced as an unpinned legacy input set.
+        """
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        if "input_set_json" not in columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN input_set_json TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -123,8 +137,8 @@ class Ledger:
                 conn.execute(
                     """INSERT INTO runs
                     (id, dataset_name, status, started_at, finished_at, contract_hash,
-                     contract_path, output_dir, summary_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     contract_path, output_dir, summary_json, input_set_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         run["id"],
                         run["dataset_name"],
@@ -135,6 +149,7 @@ class Ledger:
                         run["contract_path"],
                         run["output_dir"],
                         _dumps(run.get("summary", {})),
+                        _dumps(run.get("input_set", {})),
                     ),
                 )
                 conn.executemany(
@@ -196,6 +211,7 @@ class Ledger:
             item = dict(row)
             summary = _loads(item.pop("summary_json"), {})
             item["summary"] = summary
+            item["input_set"] = self._input_set(item.pop("input_set_json", ""))
             item["suppression_ratio"] = summary.get("suppression_ratio", 0.0)
             item["primary_count"] = summary.get("primary_count", 0)
             item["secondary_count"] = summary.get("secondary_count", 0)
@@ -204,6 +220,20 @@ class Ledger:
             item["blocked_reasons"] = summary.get("block_reasons", [])
             result.append(item)
         return result
+
+    @staticmethod
+    def _input_set(value: str) -> dict[str, Any]:
+        record = _loads(value, {})
+        if not isinstance(record, dict) or not record:
+            return {
+                "pinned": False,
+                "mode": "legacy",
+                "manifest_hash": None,
+                "manifest_path": None,
+                "members": [],
+                "note": "input set was not recorded for this historical run",
+            }
+        return record
 
     def get_run_detail(self, run_id: str) -> dict[str, Any] | None:
         with self._connection() as conn:
@@ -221,6 +251,7 @@ class Ledger:
             ).fetchall()
         run = dict(run_row)
         run["summary"] = _loads(run.pop("summary_json"), {})
+        run["input_set"] = self._input_set(run.pop("input_set_json", ""))
         tables = []
         for row in table_rows:
             item = dict(row)

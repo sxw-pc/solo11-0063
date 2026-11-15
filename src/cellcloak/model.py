@@ -75,6 +75,7 @@ class TableModel:
     counts: dict[Coordinate, int]
     source_name: str
     source_sha256: str
+    source_size: int | None = None
 
     def count(self, row: str, col: str) -> int:
         return self.counts[(row, col)]

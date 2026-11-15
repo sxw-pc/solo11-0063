@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -59,6 +60,7 @@ class Contract:
     privacy: PrivacyPolicy
     tables: tuple[TableSpec, ...]
     contract_hash: str
+    normalized_hash: str
 
     def table(self, table_id: str) -> TableSpec:
         for spec in self.tables:
@@ -250,6 +252,65 @@ def _parse_privacy(raw: Any, tables: Mapping[str, TableSpec]) -> PrivacyPolicy:
     )
 
 
+def _normalized_payload(
+    version: int,
+    dataset_name: str,
+    privacy: PrivacyPolicy,
+    tables: tuple[TableSpec, ...],
+) -> dict[str, Any]:
+    """A semantics-only contract projection used as the manifest binding.
+
+    It deliberately excludes YAML formatting, comments, key order and the
+    contract file's location. Two contracts with identical effective rules and
+    table declarations therefore share one normalized hash.
+    """
+
+    return {
+        "contract_version": 1,
+        "version": version,
+        "dataset_name": dataset_name,
+        "privacy": {
+            "min_count": privacy.min_count,
+            "zero_policy": privacy.zero_policy,
+            "max_suppression_ratio": privacy.max_suppression_ratio,
+            "max_suppression_rounds": privacy.max_suppression_rounds,
+            "structural_zero_cells": sorted(
+                [ref.table_id, ref.row, ref.col] for ref in privacy.structural_zero_cells
+            ),
+            "always_suppress": sorted(
+                [ref.table_id, ref.row, ref.col] for ref in privacy.always_suppress
+            ),
+        },
+        "tables": [
+            {
+                "id": spec.table_id,
+                "source": spec.source,
+                "row_dim": spec.row_dim,
+                "col_dim": spec.col_dim,
+                "value": spec.value,
+                "row_order": list(spec.row_order),
+                "col_order": list(spec.col_order),
+                "missing_cell_policy": spec.missing_cell_policy,
+                "loss_weights": sorted(
+                    [row, col, weight] for (row, col), weight in spec.loss_weights.items()
+                ),
+            }
+            for spec in tables
+        ],
+    }
+
+
+def normalized_contract_hash(
+    version: int,
+    dataset_name: str,
+    privacy: PrivacyPolicy,
+    tables: tuple[TableSpec, ...],
+) -> str:
+    payload = _normalized_payload(version, dataset_name, privacy, tables)
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def load_contract(contract_path: str | Path) -> Contract:
     path = Path(contract_path).expanduser().resolve()
     if not path.is_file():
@@ -288,4 +349,5 @@ def load_contract(contract_path: str | Path) -> Contract:
         privacy=privacy,
         tables=tables,
         contract_hash=hashlib.sha256(raw_bytes).hexdigest(),
+        normalized_hash=normalized_contract_hash(version, dataset_name, privacy, tables),
     )
